@@ -135,8 +135,11 @@ use crate::devices::virtio::balloon::{
     Balloon, BalloonConfig, BalloonError, BalloonStats, BALLOON_DEV_ID,
 };
 use crate::devices::virtio::block::device::Block;
+use crate::devices::virtio::memory::{
+    Memory, MemoryConfig, MemoryDeviceError
+};
 use crate::devices::virtio::net::Net;
-use crate::devices::virtio::{TYPE_BALLOON, TYPE_BLOCK, TYPE_NET};
+use crate::devices::virtio::{TYPE_BALLOON, TYPE_BLOCK, TYPE_MEMORY, TYPE_NET};
 use crate::logger::{error, info, warn, MetricsError, METRICS};
 use crate::persist::{MicrovmState, MicrovmStateError, VmInfo};
 use crate::rate_limiter::BucketUpdate;
@@ -810,6 +813,55 @@ impl Vmm {
         }
     }
 
+    /// Returns a reference to the virtio-mem device if present.
+    pub fn virtio_mem_config(&self) -> Result<MemoryConfig, MemoryDeviceError> {
+        info!("virtio_mem_config");
+        // assuming onlt one memory device existing so we hardcode the ID
+        if let Some(busdev) = self.get_bus_device(DeviceType::Virtio(TYPE_MEMORY), "memory-dev-1") {
+            let virtio_device = busdev
+                .lock()
+                .expect("Poisoned lock")
+                .mmio_transport_ref()
+                .expect("Unexpected device type")
+                .device();
+
+            let config = virtio_device
+                .lock()
+                .expect("Poisoned lock")
+                .as_mut_any()
+                .downcast_mut::<Memory>()
+                .unwrap()
+                .config();
+
+            Ok(config)
+        } else {
+            Err(MemoryDeviceError::DeviceNotFound)
+        }
+    } 
+
+    /// Updates the virtio-mem device requested size.
+    pub fn update_virtio_mem_config(&mut self, requested_size_kib: u64) -> Result<(), MemoryDeviceError> {
+        if let Some(busdev) = self.get_bus_device(DeviceType::Virtio(TYPE_MEMORY), "memory-dev-1") {
+            let virtio_device = busdev
+                .lock()
+                .expect("Poisoned lock")
+                .mmio_transport_ref()
+                .expect("Unexpected device type")
+                .device();
+
+            virtio_device
+                .lock()
+                .expect("Poisoned lock")
+                .as_mut_any()
+                .downcast_mut::<Memory>()
+                .unwrap()
+                .change_requested_size(requested_size_kib)?;
+
+            Ok(())
+        } else {
+            Err(MemoryDeviceError::DeviceNotFound)
+        }
+    }
     /// Signals Vmm to stop and exit.
     pub fn stop(&mut self, exit_code: FcExitCode) {
         // To avoid cycles, all teardown paths take the following route:

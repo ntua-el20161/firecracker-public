@@ -6,6 +6,7 @@
 // found in the THIRD-PARTY file.
 
 use std::fmt::Debug;
+use crate::logger::info;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -67,6 +68,7 @@ impl MmioTransport {
         device: Arc<Mutex<dyn VirtioDevice>>,
         is_vhost_user: bool,
     ) -> MmioTransport {
+        info!("new mmio transport for device {:x}", device.lock().expect("Poisoned lock").device_type());
         let interrupt_status = device.lock().expect("Poisoned lock").interrupt_status();
 
         MmioTransport {
@@ -173,23 +175,31 @@ impl MmioTransport {
     fn set_device_status(&mut self, status: u32) {
         use device_status::*;
         // match changed bits
+        let device_type = self.locked_device().device_type();
+        info!("set_device_status for device {:x}: 0x{:x}", device_type ,status);
         match !self.device_status & status {
             ACKNOWLEDGE if self.device_status == INIT => {
+                info!("set_device_status for {:x}: ACKNOWLEDGE", device_type);
                 self.device_status = status;
             }
             DRIVER if self.device_status == ACKNOWLEDGE => {
+                info!("set_device_status for {:x}: DRIVER", device_type);
                 self.device_status = status;
             }
             FEATURES_OK if self.device_status == (ACKNOWLEDGE | DRIVER) => {
+                info!("set_device_status for {:x}: FEATURES_OK", device_type);
                 self.device_status = status;
             }
             DRIVER_OK if self.device_status == (ACKNOWLEDGE | DRIVER | FEATURES_OK) => {
+                info!("set_device_status for {:x}: DRIVER_OK", device_type);
                 self.device_status = status;
                 let device_activated = self.locked_device().is_activated();
                 if !device_activated && self.are_queues_valid() {
+                    info!("activation gets called here for device {:x}", device_type);
                     // temporary variable needed for borrow checker
                     let activate_result = self.locked_device().activate(self.mem.clone());
                     if let Err(err) = activate_result {
+                        info!("activate_result: {:?}", err); 
                         self.device_status |= DEVICE_NEEDS_RESET;
 
                         // Section 2.1.2 of the specification states that we need to send a device

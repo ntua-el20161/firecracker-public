@@ -1,15 +1,15 @@
 // Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 use std::sync::{Arc, Mutex};
-use crate::devices::virtio::memory::device::Memory;
+use crate::devices::virtio::memory::device::{Memory, MemoryConfig};
 use serde::{Deserialize, Serialize};
-
+use crate::logger::info;
 const KIB: u64 = 1024;
 
 type MutexMemory = Arc<Mutex<Memory>>;
 /// Errors associated with the operations allowed on the memory.
 
-#[derive(Debug, thiserror::Error, displaydoc::Display)]
+#[derive(Debug, derive_more::From, thiserror::Error, displaydoc::Display)]
 pub enum MemoryConfigError {
     /// The user made a request on an inexistent memory device.
     DeviceNotFound,
@@ -18,8 +18,9 @@ pub enum MemoryConfigError {
     /// There already exists a device with this id.
     DeviceWithThisIdExists,
     /// Failed to create a memory device.
-    CreateFailure(crate::devices::virtio::memory::Error),
+    CreateFailure(crate::devices::virtio::memory::MemoryDeviceError),
 }
+
 
 type Result<T> = std::result::Result<T, MemoryConfigError>;
 /// This struct represents the strongly typed equivalent of the json body
@@ -41,9 +42,21 @@ pub struct MemoryDeviceConfig {
     #[serde(default)]
     pub requested_size_kib: u64,
 }
+
+impl From<MemoryConfig> for MemoryDeviceConfig {
+    fn from(state: MemoryConfig) -> Self {
+        MemoryDeviceConfig {
+            id: state.id,
+            block_size_kib: state.block_size_kib * KIB,
+            node_id: state.node_id,
+            region_size_kib: state.region_size_kib * KIB,
+            requested_size_kib: state.requested_size_kib * KIB,
+        }
+    }
+}
 /// The data fed into a memory update request. The only thing that can be modified
 /// is the requested size of the memory region.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryUpdateConfig {
     /// Requested size in bytes.
@@ -69,16 +82,23 @@ impl MemoryBuilder {
     }
     /// Creates a Memory device from the MemoryDeviceConfig provided
     fn build(cfg: MemoryDeviceConfig) -> Result<MutexMemory> {
+        info!("build memory device  {:x} {:x} {:x}",
+            cfg.block_size_kib,
+            cfg.region_size_kib,
+            cfg.requested_size_kib
+        );
         let memory = Memory::new(
             cfg.block_size_kib * KIB,
             cfg.node_id,
             cfg.region_size_kib * KIB,
             cfg.id,
+            cfg.requested_size_kib * KIB,
         )
         .map_err(MemoryConfigError::CreateFailure)?;
+        info!("created memory device");
         Ok(Arc::new(Mutex::new(memory)))
     }
-    /// Inserts into the builder the memory device created from the config.
+    /// Inserts into the builder the memory device created from the config
     pub fn insert(&mut self, cfg: MemoryDeviceConfig) -> Result<()> {
         let memory = Self::build(cfg)?;
         self.add_device(memory)?;
@@ -104,6 +124,17 @@ impl MemoryBuilder {
     pub fn iter(&self) -> std::slice::Iter<MutexMemory> {
         self.memory_devices.iter()
     }
+
+    //assuming only one device present for now.
+    /// Returns the same structure that was used to configure the device.
+    pub fn get_config(&self) -> Result<MemoryDeviceConfig> {
+        self.memory_devices
+            .get(0)
+            .ok_or(MemoryConfigError::DeviceNotFound)
+            .map(|memory_mutex| memory_mutex.lock().expect("Poisoned lock").config())
+            .map(MemoryDeviceConfig::from)
+    }
+
 }
 #[cfg(test)]
 pub(crate) mod tests {

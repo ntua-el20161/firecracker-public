@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pub mod device;
 pub mod event_handler;
-pub use self::device::Memory;
+pub use self::device::{ Memory, MemoryConfig };
 pub const QUEUE_SIZE: u16 = 256;
 // the index of guest requests queue from Memory device queues/queues_evts vector.
 pub const GUEST_REQUESTS_INDEX: usize = 0;
@@ -11,7 +11,7 @@ pub const CONFIG_SPACE_SIZE: usize = 56;
 const _VIRTIO_MEM_F_ACPI_PXM: u32 = 0; // The node id is valid and corresponds to an ACPI PXM.
 const _VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE: u32 = 1; // The driver is not allowed to access unplugged memory.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
-pub enum Error {
+pub enum MemoryDeviceError {
     /// Activation error.
     Activate(super::ActivateError),
     /// Start address already set
@@ -30,8 +30,10 @@ pub enum Error {
     EventFd(std::io::Error),
     /// Quereying page size error.
     PageSize(utils::errno::Error),
+    /// Error while sending an interrupt
+    InterruptError(std::io::Error),
     /// Size is not a multiple of Block Size.
     SizeNotMultipleOfBlockSize,
-}
+} 
 
-pub type MemoryResult<T> = std::result::Result<T, Error>;
+pub type MemoryResult<T> = std::result::Result<T, MemoryDeviceError>;

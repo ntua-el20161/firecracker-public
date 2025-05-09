@@ -9,6 +9,7 @@ use serde_json::Value;
 use vmm::logger::{error, info, log_enabled, Level};
 use vmm::rpc_interface::{VmmAction, VmmActionError, VmmData};
 
+
 use super::request::actions::parse_put_actions;
 use super::request::balloon::{parse_get_balloon, parse_patch_balloon, parse_put_balloon};
 use super::request::boot_source::parse_put_boot_source;
@@ -20,6 +21,7 @@ use super::request::logger::parse_put_logger;
 use super::request::machine_configuration::{
     parse_get_machine_config, parse_patch_machine_config, parse_put_machine_config,
 };
+use super::request::memory::{ parse_get_memory, parse_patch_memory };
 use super::request::metrics::parse_put_metrics;
 use super::request::mmds::{parse_get_mmds, parse_patch_mmds, parse_put_mmds};
 use super::request::net::{parse_patch_net, parse_put_net};
@@ -82,6 +84,7 @@ impl TryFrom<&Request> for ParsedRequest {
                 Ok(ParsedRequest::new_sync(VmmAction::GetFullVmConfig))
             }
             (Method::Get, "machine-config", None) => parse_get_machine_config(),
+            (Method::Get, "memory-device", None) => parse_get_memory(), 
             (Method::Get, "mmds", None) => parse_get_mmds(),
             (Method::Get, _, Some(_)) => method_to_error(Method::Get),
             (Method::Put, "actions", Some(body)) => parse_put_actions(body),
@@ -103,6 +106,7 @@ impl TryFrom<&Request> for ParsedRequest {
             (Method::Patch, "balloon", Some(body)) => parse_patch_balloon(body, path_tokens.next()),
             (Method::Patch, "drives", Some(body)) => parse_patch_drive(body, path_tokens.next()),
             (Method::Patch, "machine-config", Some(body)) => parse_patch_machine_config(body),
+            (Method::Patch, "memory-device", Some(body)) => { parse_patch_memory(body) }
             (Method::Patch, "mmds", Some(body)) => parse_patch_mmds(body),
             (Method::Patch, "network-interfaces", Some(body)) => {
                 parse_patch_net(body, path_tokens.next())
@@ -165,6 +169,9 @@ impl ParsedRequest {
                 }
                 VmmData::MachineConfiguration(vm_config) => {
                     Self::success_response_with_data(vm_config)
+                }
+                VmmData::MemoryConfig(memory_config) => {
+                    Self::success_response_with_data(memory_config)
                 }
                 VmmData::MmdsValue(value) => Self::success_response_with_mmds_value(value),
                 VmmData::BalloonConfig(balloon_config) => {
@@ -560,6 +567,9 @@ pub mod tests {
                     http_response(&serde_json::to_string(cfg).unwrap(), 200)
                 }
                 VmmData::MachineConfiguration(cfg) => {
+                    http_response(&serde_json::to_string(cfg).unwrap(), 200)
+                }
+                VmmData::MemoryConfig(cfg) => {
                     http_response(&serde_json::to_string(cfg).unwrap(), 200)
                 }
                 VmmData::MmdsValue(value) => {

@@ -8,6 +8,7 @@ use super::{report_balloon_event_fail, DEFLATE_INDEX, INFLATE_INDEX, STATS_INDEX
 use crate::devices::virtio::balloon::device::Balloon;
 use crate::devices::virtio::device::VirtioDevice;
 use crate::logger::{error, warn};
+use crate::logger::info;
 
 impl Balloon {
     const PROCESS_ACTIVATE: u32 = 0;
@@ -17,6 +18,7 @@ impl Balloon {
     const PROCESS_STATS_TIMER: u32 = 4;
 
     fn register_runtime_events(&self, ops: &mut EventOps) {
+        info!("balloon: register_runtime_events");
         if let Err(err) = ops.add(Events::with_data(
             &self.queue_evts[INFLATE_INDEX],
             Self::PROCESS_VIRTQ_INFLATE,
@@ -50,6 +52,7 @@ impl Balloon {
     }
 
     fn register_activate_event(&self, ops: &mut EventOps) {
+        info!("register_activate_event");
         if let Err(err) = ops.add(Events::with_data(
             &self.activate_evt,
             Self::PROCESS_ACTIVATE,
@@ -60,6 +63,7 @@ impl Balloon {
     }
 
     fn process_activate_event(&self, ops: &mut EventOps) {
+        info!("balloon: process activate event");
         if let Err(err) = self.activate_evt.read() {
             error!("Failed to consume balloon activate event: {:?}", err);
         }

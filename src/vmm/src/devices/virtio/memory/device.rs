@@ -1,12 +1,15 @@
 // Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
+
 use std::cmp;
 use std::io::Write;
 use std::result::Result;
-use crate::logger::{error, info};
+use crate::logger::{error, info, debug};
 use utils::eventfd::EventFd;
 use utils::get_page_size;
 use crate::devices::virtio::gen::virtio_blk::VIRTIO_F_VERSION_1;
+use serde::Serialize;
+
 //use vm_memory::{ByteValued, GuestMemoryMmap};
 use crate::vstate::memory::{ByteValued, GuestMemoryMmap};
 use super::super::{ActivateError, TYPE_MEMORY};
@@ -14,23 +17,50 @@ use crate::devices::virtio::device::DeviceState;
 use crate::devices::virtio::device::VirtioDevice;
 use crate::devices::virtio::queue::Queue;
 use super::{MemoryResult, QUEUE_SIZE};
-use crate::devices::virtio::memory::Error as MemoryError;
-use crate::devices::virtio::device::IrqTrigger;
+use crate::devices::virtio::memory::MemoryDeviceError as MemoryError;
+use crate::devices::virtio::device::{ IrqTrigger, IrqType };
+
+const KIB: u64 = 1024;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ConfigSpace {
     pub block_size: u64,
     pub node_id: u16,
     _padding: [u8; 6],
-    pub addr: u64,
+
+    // guest physical addres from where the memory region starts
+    // maybe init this to 32 * Gib
+    pub addr: u64, 
     pub region_size: u64,
+    // some size might be reserved
     pub usable_region_size: u64,
     pub plugged_size: u64,
     pub requested_size: u64,
 }
 // Safe because ConfigSpace only contains plain data.
 unsafe impl ByteValued for ConfigSpace {}
-// Virtio memory device.
+
+// Configuration for the memory device.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryConfig {
+    /// ID of the device.
+    pub id: String,
+    /// Block size in bytes.
+    #[serde(default)]
+    pub block_size_kib: u64,
+    /// Node id if any.
+    #[serde(default)]
+    pub node_id: Option<u16>,
+    /// Region size in bytes.
+    pub region_size_kib: u64,
+    /// Requested size in bytes.
+    #[serde(default)]
+    pub requested_size_kib: u64,
+}
+
+/// Virtio memory device.
 #[derive(Debug)]
 pub struct Memory {
     // Virtio fields.
@@ -40,19 +70,21 @@ pub struct Memory {
     pub(crate) activate_evt: EventFd,
     // Transport related fields.
     pub(crate) queues: [Queue; 1],
-    pub(crate) queue_evts: [EventFd; 1],
-    pub(crate) device_state: DeviceState,
-    pub(crate) irq_trigger: IrqTrigger,
+    pub(crate) queue_evts: [EventFd; 1], 
+    pub(crate) device_state: DeviceState, // Device state : Activated/Inactive
+    pub(crate) irq_trigger: IrqTrigger, 
     // Implementation specific fields.
     pub(crate) id: String,
     addr_is_set: bool,
 }
+
 impl Memory {
     pub fn new(
         block_size: u64,
         node_id: Option<u16>,
         region_size: u64,
         id: String,
+        requested_size: u64,
     ) -> MemoryResult<Memory> {
         // the way thsi device will handle hot(un)plugs requires the block size
         // to be a multiple of the host page size
@@ -94,7 +126,7 @@ impl Memory {
                 region_size,
                 usable_region_size: 0u64,
                 plugged_size: 0u64,
-                requested_size: 0u64,
+                requested_size: requested_size,
             },
             id,
             irq_trigger: IrqTrigger::new().map_err(MemoryError::EventFd)?,
@@ -104,15 +136,18 @@ impl Memory {
             queue_evts,
         })
     }
+
     /// Process device virtio queue.
     pub fn process_guest_request_queue(&mut self) {
         // TODO
-        info!("Memory.process_guest_requests_queue");
+        debug!("Memory.process_guest_requests_queue");
     }
+
     #[inline]
     fn addr_is_set(&self) -> bool {
         self.addr_is_set
     }
+
     /// Set the start address of the memory region managed by this device.
     pub fn set_addr(&mut self, addr: u64) -> MemoryResult<()> {
         if self.addr_is_set() {
@@ -121,7 +156,7 @@ impl Memory {
         self.config_space.addr = addr;
         Ok(())
     }
-    /// Resturns the identifier of the device.
+    /// Returns the identifier of the device.
     pub fn id(&self) -> &str {
         self.id.as_str()
     }
@@ -133,15 +168,44 @@ impl Memory {
     pub fn block_size(&self) -> u64 {
         self.config_space.block_size
     }
+
+    pub fn requested_size(&self) -> u64 {
+        self.config_space.requested_size
+    }
+
+    pub fn node_id(&self) -> u16 {
+        self.config_space.node_id
+    }
+
     /// Handle
-    pub fn change_requested_size(&mut self, requested_size: u64) -> MemoryResult<()> {
+    pub fn change_requested_size(&mut self, requested_size_kib: u64) -> MemoryResult<()> {
         // TODO
         info!(
-            "Got a request to change the requested_size of memory device [{}] to [{}] bytes",
+            "Got a request to change the requested_size of memory device [{}] to [{}] kbytes",
             self.id(),
-            requested_size
+            requested_size_kib
         );
-        Ok(())
+        if self.is_activated() {
+            info!("Device active");
+            self.config_space.requested_size = requested_size_kib * KIB;
+            self.irq_trigger
+                .trigger_irq(IrqType::Config)
+                .map_err(MemoryError::InterruptError)
+        } else {
+            Err(MemoryError::DeviceNotActive)
+        }
+    }
+
+    /// The configuration of the memory device.
+    pub fn config(&self) -> MemoryConfig {
+        info!("config");
+        MemoryConfig {
+            id: self.id.clone(),
+            block_size_kib: (self.block_size() / KIB),
+            node_id: Some(self.node_id()),
+            region_size_kib: (self.region_size() / KIB),
+            requested_size_kib: (self.requested_size() / KIB),
+        }
     }
 }
 impl VirtioDevice for Memory {
@@ -203,8 +267,9 @@ impl VirtioDevice for Memory {
         self.device_state.is_activated()
     }
     fn activate(&mut self, mem: GuestMemoryMmap) -> Result<(), ActivateError> {
+        info!("Memory.activate");
         if self.activate_evt.write(1).is_err() {
-            error!("Memory: Cannot write to activate_evt");
+            info!("Memory: Cannot write to activate_evt");
             // TODO: Increment metrics (?)
             self.device_state = DeviceState::Inactive;
             return Err(ActivateError::EventFd);
@@ -239,30 +304,30 @@ pub(crate) mod tests {
     #[test]
     fn test_new_memory() {
         let page_size: u64 = page_size();
-        let block_size_zero = Memory::new(0, None, 0, String::from("memory-dev-1"));
+        let block_size_zero = Memory::new(0, None, 0, String::from("memory-dev-1"), 0);
         match block_size_zero {
             Err(MemoryError::BlockSizeIsZero) => {}
             _ => unreachable!(),
         }
         let block_size_allignment =
-            Memory::new(page_size + 1, None, 0, String::from("memory-dev-2"));
+            Memory::new(page_size + 1, None, 0, String::from("memory-dev-2"), 0);
         match block_size_allignment {
             Err(MemoryError::BlockSizeNotMultipleOfPageSize(_)) => {}
             _ => unreachable!(),
         }
-        let block_size_power2 = Memory::new(page_size * 3, None, 0, String::from("memory-dev-3"));
+        let block_size_power2 = Memory::new(page_size * 3, None, 0, String::from("memory-dev-3"), 0);
         match block_size_power2 {
             Err(MemoryError::BlockSizeNotPowerOf2) => {}
             _ => unreachable!(),
         }
         let region_size_multiple =
-            Memory::new(page_size, None, page_size + 1, String::from("memory-dev-4"));
+            Memory::new(page_size, None, page_size + 1, String::from("memory-dev-4"), 0);
         match region_size_multiple {
             Err(MemoryError::SizeNotMultipleOfBlockSize) => {}
             _ => unreachable!(),
         }
         let memory_ok =
-            Memory::new(page_size, None, page_size, String::from("memory-dev-5")).unwrap();
+            Memory::new(page_size, None, page_size, String::from("memory-dev-5"), 0).unwrap();
         assert_eq!(memory_ok.device_type(), TYPE_MEMORY);
         assert_eq!(memory_ok.id(), "memory-dev-5");
         assert!(!memory_ok.addr_is_set());
@@ -275,7 +340,7 @@ pub(crate) mod tests {
     fn test_read_config() {
         let page_size: u64 = get_page_size().unwrap() as u64;
         let memory_device =
-            Memory::new(page_size, None, page_size, String::from("memory-dev")).unwrap();
+            Memory::new(page_size, None, page_size, String::from("memory-dev"), 0).unwrap();
         // 7 fields of 8 Bytes each
         let mut actual_config_space = [0u8; CONFIG_SPACE_SIZE];
         memory_device.read_config(0, &mut actual_config_space);
@@ -309,7 +374,7 @@ pub(crate) mod tests {
     fn test_write_config() {
         let page_size: u64 = get_page_size().unwrap() as u64;
         let mut memory_device =
-            Memory::new(page_size, None, page_size, String::from("memory-dev")).unwrap();
+            Memory::new(page_size, None, page_size, String::from("memory-dev"), 0).unwrap();
         let mut expected_config_space: [u8; CONFIG_SPACE_SIZE] = [0u8; CONFIG_SPACE_SIZE];
         // reading the expected config is assured by `test_read_config()`
         memory_device.read_config(0, &mut expected_config_space);

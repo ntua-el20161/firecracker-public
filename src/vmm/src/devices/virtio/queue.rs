@@ -5,6 +5,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
+use crate::logger::info;
 use std::cmp::min;
 use std::num::Wrapping;
 use std::sync::atomic::{fence, Ordering};
@@ -316,8 +317,10 @@ impl Queue {
     /// Validates that the queue's representation is correct.
     pub fn is_valid<M: GuestMemory>(&self, mem: &M) -> bool {
         if !self.is_layout_valid(mem) {
+            info!("virtio queue layout is invalid");
             false
         } else if self.len(mem) > self.max_size {
+            info!("virtio queue number of available descriptors {} is greater than queue max size {}", self.len(mem), self.max_size);
             error!(
                 "virtio queue number of available descriptors {} is greater than queue max size {}",
                 self.len(mem),

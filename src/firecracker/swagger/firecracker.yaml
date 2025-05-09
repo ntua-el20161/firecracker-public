@@ -377,7 +377,23 @@ paths:
           description: Internal server error
           schema:
             $ref: "#/definitions/Error"
-
+  /mem-device:
+    get:
+      summary: Returns the current memory device configuration.
+      operationId: GetMemoryDeviceConfig
+      responses:
+        200:
+          description: The memory device configuration
+          schema:
+            $ref: "#/definitions/MemoryDevice"
+        400:
+          description: Memory device not configured.
+          schema:
+            $ref: "#/definitions/Error"
+        default:
+          description: Internal Server Error
+          schema:
+            $ref: "#/definitions/Error"
   /metrics:
     put:
       summary: Initializes the metrics system by specifying a named pipe or a file for the metrics output.
@@ -1069,7 +1085,29 @@ definitions:
           2) Path to the UDS where a process is listening for a UFFD initialization
           control payload and open file descriptor that it can use to serve this
           process's guest memory page faults
-
+  MemoryDevice:
+    type: object
+    description:
+      Describes the memory device configuration.
+    required:
+      - id
+      - requested_size_kib
+      - block_size_kib
+      - requested_size_kib
+    properties:
+      id:
+        type: string
+        description: The ID of the memory device.
+      requested_size:
+        type: string
+        description: The requested size of the memory device.
+      block_size_kib:
+        type: integer
+        description: The block size of the memory device.
+      requested_size_kib:
+        type: integer
+        description: The requested size of the memory device.
+    
   Metrics:
     type: object
     description:

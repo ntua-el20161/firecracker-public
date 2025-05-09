@@ -106,7 +106,7 @@ pub struct VmResources {
     pub vsock: VsockBuilder,
     /// The balloon device.
     pub balloon: BalloonBuilder,
-    /// The memory device.
+    /// The memory device. (virtio-mem)
     pub memory: MemoryBuilder,
     /// The network devices builder.
     pub net_builder: NetBuilder,
@@ -130,6 +130,7 @@ impl VmResources {
         mmds_size_limit: usize,
         metadata_json: Option<&str>,
     ) -> Result<Self, ResourcesError> {
+        info!("VmResources::from_json");
         let vmm_config = serde_json::from_str::<VmmConfig>(config_json)?;
 
         if let Some(logger_config) = vmm_config.logger {
@@ -361,6 +362,7 @@ impl VmResources {
     /// Sets a memory device to be attached when the VM starts.
     pub fn set_memory_device(&mut self, config: MemoryDeviceConfig
     ) -> Result<(), MemoryConfigError> {
+        info!("set_memory_device");
         self.memory.insert(config)
     }
 

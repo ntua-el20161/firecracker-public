@@ -4,7 +4,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use log::error;
+
 use serde::Serialize;
 use timerfd::{ClockId, SetTimeFlags, TimerFd, TimerState};
 use utils::eventfd::EventFd;
@@ -28,6 +28,7 @@ use crate::devices::virtio::balloon::BalloonError;
 use crate::devices::virtio::device::{IrqTrigger, IrqType};
 use crate::devices::virtio::gen::virtio_blk::VIRTIO_F_VERSION_1;
 use crate::logger::IncMetric;
+use crate::logger::{error, info};
 use crate::vstate::memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
 
 const SIZE_OF_U32: usize = std::mem::size_of::<u32>();
@@ -233,6 +234,7 @@ impl Balloon {
         let stats_timer =
             TimerFd::new_custom(ClockId::Monotonic, true, true).map_err(BalloonError::Timer)?;
 
+        info!("Baloon device created with {} MIB", amount_mib);
         Ok(Balloon {
             avail_features,
             acked_features: 0u64,
@@ -255,6 +257,7 @@ impl Balloon {
     }
 
     pub(crate) fn process_inflate_queue_event(&mut self) -> Result<(), BalloonError> {
+        info!("Called process inflate queue event");
         self.queue_evts[INFLATE_INDEX]
             .read()
             .map_err(BalloonError::EventFd)?;
@@ -262,6 +265,7 @@ impl Balloon {
     }
 
     pub(crate) fn process_deflate_queue_event(&mut self) -> Result<(), BalloonError> {
+        info!("Called process deflate queue event");
         self.queue_evts[DEFLATE_INDEX]
             .read()
             .map_err(BalloonError::EventFd)?;
@@ -281,6 +285,7 @@ impl Balloon {
     }
 
     pub(crate) fn process_inflate(&mut self) -> Result<(), BalloonError> {
+        info!("Called inflate");
         // This is safe since we checked in the event handler that the device is activated.
         let mem = self.device_state.mem().unwrap();
         METRICS.inflate_count.inc();
@@ -372,6 +377,7 @@ impl Balloon {
     }
 
     pub(crate) fn process_deflate_queue(&mut self) -> Result<(), BalloonError> {
+        info!("Called process deflate queue event");
         // This is safe since we checked in the event handler that the device is activated.
         let mem = self.device_state.mem().unwrap();
         METRICS.deflate_count.inc();
@@ -440,6 +446,7 @@ impl Balloon {
 
     /// Process device virtio queue(s).
     pub fn process_virtio_queues(&mut self) {
+        info!("Called process_virtio_queues");
         let _ = self.process_inflate();
         let _ = self.process_deflate_queue();
     }
@@ -611,6 +618,7 @@ impl VirtioDevice for Balloon {
     }
 
     fn activate(&mut self, mem: GuestMemoryMmap) -> Result<(), ActivateError> {
+        info!("activate balloon device");
         self.device_state = DeviceState::Activated(mem);
         if self.activate_evt.write(1).is_err() {
             METRICS.activate_fails.inc();

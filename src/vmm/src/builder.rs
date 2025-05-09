@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Enables pre-boot setup, instantiation and booting of a Firecracker VMM.
+use crate::logger::info;
 
 #[cfg(target_arch = "x86_64")]
 use std::convert::TryFrom;
@@ -115,7 +116,7 @@ pub enum StartMicrovmError {
     /// Cannot load command line string: {0}
     LoadCommandline(linux_loader::loader::Error),
     /// Cannot add region for a memory device: {0}
-    MemoryDevice(#[from] crate::devices::virtio::memory::Error),
+    MemoryDevice(#[from] crate::devices::virtio::memory::MemoryDeviceError),
     /// Cannot start microvm without kernel configuration.
     MissingKernelConfig,
     /// Cannot start microvm without guest mem_size config.
@@ -255,6 +256,7 @@ pub fn build_microvm_for_boot(
     event_manager: &mut EventManager,
     seccomp_filters: &BpfThreadMap,
 ) -> Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
+    info!("build_microvm_for_boot: start");
     use self::StartMicrovmError::*;
 
     // Timestamp for measuring microVM boot duration.
@@ -412,16 +414,16 @@ pub fn build_and_boot_microvm(
     event_manager: &mut EventManager,
     seccomp_filters: &BpfThreadMap,
 ) -> Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
-    debug!("event_start: build microvm for boot");
+    info!("event_start: build microvm for boot");
     let vmm = build_microvm_for_boot(instance_info, vm_resources, event_manager, seccomp_filters)?;
-    debug!("event_end: build microvm for boot");
+    info!("event_end: build microvm for boot");
     // The vcpus start off in the `Paused` state, let them run.
-    debug!("event_start: boot microvm");
+    info!("event_start: boot microvm");
     vmm.lock()
         .unwrap()
         .resume_vm()
         .map_err(StartMicrovmError::Internal)?;
-    debug!("event_end: boot microvm");
+    info!("event_end: boot microvm");
     Ok(vmm)
 }
 
@@ -885,7 +887,7 @@ fn attach_virtio_device<T: 'static + VirtioDevice + MutEventSubscriber + Debug>(
     is_vhost_user: bool,
 ) -> Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
-
+    info!("attach_virtio_device: device_id: {}", id);
     event_manager.add_subscriber(device.clone());
 
     // The device mutex mustn't be locked here otherwise it will deadlock.
@@ -1126,7 +1128,7 @@ fn attach_memory_devices<'a>(
     memory_devices: impl Iterator<Item = &'a Arc<Mutex<Memory>>>,
     event_manager: &mut EventManager,
 ) -> Result<(), StartMicrovmError> {
-
+    info!("attach_memory_devices");
     for (index, memory) in memory_devices.enumerate() {
         if index > 0 {
             panic!("too many memory devices. please only use one for now!! Thx >.< !!")

@@ -558,6 +558,7 @@ fn build_microvm_from_json(
     mmds_size_limit: usize,
     metadata_json: Option<&str>,
 ) -> Result<(VmResources, Arc<Mutex<vmm::Vmm>>), BuildFromJsonError> {
+    info!("Building microvm from json");
     let mut vm_resources =
         VmResources::from_json(&config_json, &instance_info, mmds_size_limit, metadata_json)
             .map_err(BuildFromJsonError::ParseFromJson)?;
@@ -591,6 +592,7 @@ fn run_without_api(
     mmds_size_limit: usize,
     metadata_json: Option<&str>,
 ) -> Result<(), RunWithoutApiError> {
+    info!("run_without_api");
     let mut event_manager = EventManager::new().expect("Unable to create EventManager");
 
     // Create the firecracker metrics object responsible for periodically printing metrics.

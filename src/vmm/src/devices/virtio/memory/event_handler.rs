@@ -1,21 +1,25 @@
 // Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
+
 use std::os::unix::io::AsRawFd;
 use event_manager::{EventOps, Events, MutEventSubscriber};
-use crate::logger::{debug, error, warn};
+use crate::logger::{debug, error, warn, info};
 use utils::epoll::EventSet;
 use crate::devices::virtio::memory::device::Memory;
 use crate::devices::virtio::memory::GUEST_REQUESTS_INDEX;
 use crate::devices::virtio::device::VirtioDevice;
+
 impl Memory {
+    const PROCESS_ACTIVATE: u32 = 0;
+
     fn register_activate_event(&self, ops: &mut EventOps) {
-        debug!("Memory.register_activate_event()");
-        if let Err(err) = ops.add(Events::new(&self.activate_evt, EventSet::IN)) {
-            error!("[Memory] Failed to register activate event: {}", err);
+        info!("Memory.register_activate_event()");
+        if let Err(err) = ops.add(Events::with_data(&self.activate_evt, Self::PROCESS_ACTIVATE, EventSet::IN)) {
+            info!("[Memory] Failed to register activate event: {}", err);
         }
     }
     fn register_runtime_events(&self, ops: &mut EventOps) {
-        debug!("Memory.register_runtime_events()");
+        info!("Memory.register_runtime_events()");
         if let Err(err) = ops.add(Events::new(
             &self.queue_evts[GUEST_REQUESTS_INDEX],
             EventSet::IN,
@@ -24,12 +28,12 @@ impl Memory {
         }
     }
     fn process_activate_event(&self, ops: &mut EventOps) {
-        debug!("memory: activate event");
+        info!("memory: process activate event");
         if let Err(err) = self.activate_evt.read() {
-            error!("Failed to consume memory activate event: {:?}", err);
+            info!("Failed to consume memory activate event: {:?}", err);
         }
         self.register_runtime_events(ops);
-        if let Err(err) = ops.remove(Events::new(&self.activate_evt, EventSet::IN)) {
+        if let Err(err) = ops.remove(Events::with_data(&self.activate_evt, Self::PROCESS_ACTIVATE, EventSet::IN)) {
             error!("[Memory] Failed to un-register activate event: {}", err);
         }
     }
@@ -66,7 +70,7 @@ impl MutEventSubscriber for Memory {
                 }
             }
         } else {
-            warn!(
+            info!(
                 "Memory [{}]: The device is not yet activated. Spurious event received: {:?}",
                 self.id(),
                 source
@@ -74,7 +78,7 @@ impl MutEventSubscriber for Memory {
         }
     }
     fn init(&mut self, ops: &mut EventOps) {
-        debug!("Memory device [{}].init()", self.id());
+        info!("Memory device [{}].init()", self.id());
         self.register_activate_event(ops);
     }
 }
@@ -94,7 +98,7 @@ pub mod tests {
         let page_size: u64 = get_page_size().unwrap() as u64;
         let mut event_manager = EventManager::new().unwrap();
         let mut memory_dev =
-            Memory::new(page_size, None, 10 * page_size, String::from("memory-dev")).unwrap();
+            Memory::new(page_size, None, 10 * page_size, String::from("memory-dev"), 0).unwrap();
         let mem = default_mem();
         let requestsq = VirtQueue::new(GuestAddress(0), &mem, 16);
         memory_dev.set_queue(GUEST_REQUESTS_INDEX, requestsq.create_queue());

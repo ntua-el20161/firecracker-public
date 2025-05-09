@@ -28,7 +28,7 @@ pub static INSTANCE_ID: OnceLock<String> = OnceLock::new();
 /// Default values matching the swagger specification (`src/firecracker/swagger/firecracker.yaml`).
 pub static LOGGER: Logger = Logger(Mutex::new(LoggerConfiguration {
     target: None,
-    filter: LogFilter { module: None },
+    filter: LogFilter {module: None},
     format: LogFormat {
         show_level: false,
         show_log_origin: false,
@@ -48,6 +48,7 @@ impl Logger {
     pub fn init(&'static self) -> Result<(), LoggerInitError> {
         log::set_logger(self)?;
         log::set_max_level(DEFAULT_LEVEL);
+
         Ok(())
     }
 

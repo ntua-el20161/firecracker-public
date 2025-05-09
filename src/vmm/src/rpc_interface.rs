@@ -26,6 +26,7 @@ use crate::vmm_config::drive::{BlockDeviceConfig, BlockDeviceUpdateConfig, Drive
 use crate::vmm_config::entropy::{EntropyDeviceConfig, EntropyDeviceError};
 use crate::vmm_config::instance_info::InstanceInfo;
 use crate::vmm_config::machine_config::{MachineConfig, MachineConfigUpdate, VmConfigError};
+use crate::vmm_config::memory::{MemoryConfigError, MemoryDeviceConfig, MemoryUpdateConfig};
 use crate::vmm_config::metrics::{MetricsConfig, MetricsConfigError};
 use crate::vmm_config::mmds::{MmdsConfig, MmdsConfigError};
 use crate::vmm_config::net::{
@@ -60,6 +61,8 @@ pub enum VmmAction {
     GetFullVmConfig,
     /// Get MMDS contents.
     GetMMDS,
+    /// Get the virtio memory configuration.
+    GetVirtioMemConfig,
     /// Get the machine configuration of the microVM.
     GetVmMachineConfig,
     /// Get microVM instance information.
@@ -117,6 +120,8 @@ pub enum VmmAction {
     /// Update a network interface, after microVM start. Currently, the only updatable properties
     /// are the RX and TX rate limiters.
     UpdateNetworkInterface(NetworkInterfaceUpdateConfig),
+    /// Update the Virtio Mem device configuration, after microVM start.
+    UpdateMemoryDevice(MemoryUpdateConfig),
     /// Update the microVM configuration (memory & vcpu) using `VmUpdateConfig` as input. This
     /// action can only be called before the microVM has booted.
     UpdateVmConfiguration(MachineConfigUpdate),
@@ -145,6 +150,8 @@ pub enum VmmActionError {
     Logger(#[from] crate::logger::LoggerUpdateError),
     /// Machine config error: {0}
     MachineConfig(#[from] VmConfigError),
+    /// Memory config error: {0}
+    MemoryConfig(#[from] MemoryConfigError),
     /// Metrics error: {0}
     Metrics(#[from] MetricsConfigError),
     #[from(ignore)]
@@ -184,6 +191,8 @@ pub enum VmmData {
     FullVmConfig(VmmConfig),
     /// The microVM configuration represented by `VmConfig`.
     MachineConfiguration(MachineConfig),
+    /// The virtio-mem device configuration.
+    MemoryConfig(MemoryDeviceConfig),
     /// Mmds contents.
     MmdsValue(serde_json::Value),
     /// The microVM instance information.
@@ -413,6 +422,7 @@ impl<'a> PrebootApiController<'a> {
                 );
                 Ok(VmmData::FullVmConfig((&*self.vm_resources).into()))
             }
+            GetVirtioMemConfig => self.virtio_mem_config(),
             GetMMDS => self.get_mmds(),
             GetVmMachineConfig => Ok(VmmData::MachineConfiguration(MachineConfig::from(
                 &self.vm_resources.vm_config,
@@ -442,6 +452,7 @@ impl<'a> PrebootApiController<'a> {
             | Resume
             | GetBalloonStats
             | UpdateBalloon(_)
+            | UpdateMemoryDevice(_)
             | UpdateBalloonStatistics(_)
             | UpdateBlockDevice(_)
             | UpdateNetworkInterface(_) => Err(VmmActionError::OperationNotSupportedPreBoot),
@@ -456,6 +467,14 @@ impl<'a> PrebootApiController<'a> {
             .get_config()
             .map(VmmData::BalloonConfig)
             .map_err(VmmActionError::BalloonConfig)
+    }
+
+    fn virtio_mem_config(&mut self) -> Result<VmmData, VmmActionError> {
+        self.vm_resources
+            .memory
+            .get_config()
+            .map(VmmData::MemoryConfig)
+            .map_err(VmmActionError::MemoryConfig)
     }
 
     fn insert_block_device(&mut self, cfg: BlockDeviceConfig) -> Result<VmmData, VmmActionError> {
@@ -641,6 +660,13 @@ impl RuntimeApiController {
                 .map(VmmData::BalloonStats)
                 .map_err(|err| VmmActionError::BalloonConfig(BalloonConfigError::from(err))),
             GetFullVmConfig => Ok(VmmData::FullVmConfig((&self.vm_resources).into())),
+            GetVirtioMemConfig => self
+                .vmm
+                .lock()
+                .expect("Poisoned lock")
+                .virtio_mem_config()
+                .map(|state| VmmData::MemoryConfig(MemoryDeviceConfig::from(state)))
+                .map_err(|err| VmmActionError::MemoryConfig(MemoryConfigError::from(err))),
             GetMMDS => self.get_mmds(),
             GetVmMachineConfig => Ok(VmmData::MachineConfiguration(MachineConfig::from(
                 &self.vm_resources.vm_config,
@@ -672,6 +698,16 @@ impl RuntimeApiController {
                 .map(|_| VmmData::Empty)
                 .map_err(|err| VmmActionError::BalloonConfig(BalloonConfigError::from(err))),
             UpdateBlockDevice(new_cfg) => self.update_block_device(new_cfg),
+            UpdateMemoryDevice(memory_update) => self
+                .vmm
+                .lock()
+                .expect("Poisoned lock")
+                .update_virtio_mem_config(memory_update.requested_size_kib)
+                .map(|_| VmmData::Empty)
+                .map_err(|err| {
+                    error!("Failed to change requested size: {:?}", err);
+                    VmmActionError::MemoryConfig(MemoryConfigError::from(err))
+                }),
             UpdateNetworkInterface(netif_update) => self.update_net_rate_limiters(netif_update),
 
             // Operations not allowed post-boot.

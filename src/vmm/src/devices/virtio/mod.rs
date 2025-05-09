@@ -55,6 +55,7 @@ pub const TYPE_BLOCK: u32 = 2;
 pub const TYPE_RNG: u32 = 4;
 /// Virtio balloon device ID.
 pub const TYPE_BALLOON: u32 = 5;
+/// Virtio-Mem device ID.
 pub const TYPE_MEMORY: u32 = 24;
 /// Offset from the base MMIO address of a virtio device used by the guest to notify the device of
 /// queue events.
