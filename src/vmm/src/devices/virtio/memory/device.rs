@@ -4,6 +4,7 @@
 use std::cmp;
 use std::io::Write;
 use std::result::Result;
+use crate::devices::virtio::memory::GUEST_REQUESTS_INDEX;
 use crate::logger::{error, info, debug};
 use utils::eventfd::EventFd;
 use utils::get_page_size;
@@ -33,7 +34,6 @@ pub(crate) struct ConfigSpace {
     // maybe init this to 32 * Gib
     pub addr: u64, 
     pub region_size: u64,
-    // some size might be reserved
     pub usable_region_size: u64,
     pub plugged_size: u64,
     pub requested_size: u64,
@@ -69,8 +69,8 @@ pub struct Memory {
     pub(crate) config_space: ConfigSpace,
     pub(crate) activate_evt: EventFd,
     // Transport related fields.
-    pub(crate) queues: [Queue; 1],
-    pub(crate) queue_evts: [EventFd; 1], 
+    pub(crate) queues: [Queue; 1],  // virtq
+    pub(crate) queue_evts: [EventFd; 1], // used for notification
     pub(crate) device_state: DeviceState, // Device state : Activated/Inactive
     pub(crate) irq_trigger: IrqTrigger, 
     // Implementation specific fields.
@@ -101,8 +101,10 @@ impl Memory {
         if !block_size.is_power_of_two() {
             return Err(MemoryError::BlockSizeNotPowerOf2);
         }
-        // virtio-mem spec requirement
         if region_size % block_size != 0 {
+            return Err(MemoryError::SizeNotMultipleOfBlockSize);
+        }
+        if requested_size % block_size != 0 {
             return Err(MemoryError::SizeNotMultipleOfBlockSize);
         }
         if let Some(node_id) = node_id {
@@ -126,7 +128,7 @@ impl Memory {
                 region_size,
                 usable_region_size: 0u64,
                 plugged_size: 0u64,
-                requested_size: requested_size,
+                requested_size: 0u64,
             },
             id,
             irq_trigger: IrqTrigger::new().map_err(MemoryError::EventFd)?,
@@ -137,10 +139,61 @@ impl Memory {
         })
     }
 
+    pub(crate) fn process_plug_queue_event(&mut self) -> MemoryResult<()> {
+        info!("Memory.process_plug_queue_event");
+        self.queue_evts[GUEST_REQUESTS_INDEX]
+            .read()
+            .map_err(MemoryError::EventFd)?;
+        self.process_plug()
+    }   
+    pub(crate) fn process_unplug_queue_event(&mut self) -> MemoryResult<()> {
+        info!("Memory.process_unplug_queue_event");
+        self.queue_evts[GUEST_REQUESTS_INDEX]
+            .read()
+            .map_err(MemoryError::EventFd)?;
+        self.process_unplug()
+    }
+    pub(crate) fn process_unplug_all_queue_event(&mut self) -> MemoryResult<()> {
+        info!("Memory.process_unplug_all_queue_event");
+        self.queue_evts[GUEST_REQUESTS_INDEX]
+            .read()
+            .map_err(MemoryError::EventFd)?;
+        self.process_unplug_all()
+    }
+    pub(crate) fn process_state_event(&mut self) -> MemoryResult<()> {
+        info!("Memory.process_state_event");
+        self.queue_evts[GUEST_REQUESTS_INDEX]
+            .read()
+            .map_err(MemoryError::EventFd)?;
+        self.process_state()
+    }
     /// Process device virtio queue.
-    pub fn process_guest_request_queue(&mut self) {
+    pub(crate) fn process_guest_request_queue(&mut self) {
         // TODO
+        // called in case the device has memory to plug on init (?) virtio spec-1.2 5.15.
         debug!("Memory.process_guest_requests_queue");
+    }
+
+    pub(crate) fn process_plug(&mut self) -> MemoryResult<()> {
+        // TODO
+        info!("Memory.process_plug");
+
+        Ok(())
+    }
+    pub(crate) fn process_unplug(&mut self) -> MemoryResult<()> {
+        // TODO
+        info!("Memory.process_unplug");
+        Ok(())
+    }
+    pub(crate) fn process_unplug_all(&mut self) -> MemoryResult<()> {
+        // TODO
+        info!("Memory.process_unplug_all");
+        Ok(())
+    }
+    pub(crate) fn process_state(&mut self) -> MemoryResult<()> {
+        // TODO
+        info!("Memory.process_state");
+        Ok(())
     }
 
     #[inline]
@@ -179,7 +232,6 @@ impl Memory {
 
     /// Handle
     pub fn change_requested_size(&mut self, requested_size_kib: u64) -> MemoryResult<()> {
-        // TODO
         info!(
             "Got a request to change the requested_size of memory device [{}] to [{}] kbytes",
             self.id(),
@@ -196,7 +248,7 @@ impl Memory {
         }
     }
 
-    /// The configuration of the memory device.
+    /// Get the configuration of the memory device.
     pub fn config(&self) -> MemoryConfig {
         info!("config");
         MemoryConfig {

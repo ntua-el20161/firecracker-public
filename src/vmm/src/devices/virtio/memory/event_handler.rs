@@ -10,21 +10,46 @@ use crate::devices::virtio::memory::GUEST_REQUESTS_INDEX;
 use crate::devices::virtio::device::VirtioDevice;
 
 impl Memory {
-    const PROCESS_ACTIVATE: u32 = 0;
+    const PROCESS_VIRTQ_PLUG: u32 = 0;
+    const PROCESS_VIRTQ_UNPLUG: u32 = 1;
+    const PROCESS_VIRTQ_UNPLUG_ALL: u32 = 2;
+    const PROCESS_STATE: u32 = 3;
 
     fn register_activate_event(&self, ops: &mut EventOps) {
         info!("Memory.register_activate_event()");
-        if let Err(err) = ops.add(Events::with_data(&self.activate_evt, Self::PROCESS_ACTIVATE, EventSet::IN)) {
+        if let Err(err) = ops.add(Events::new(&self.activate_evt, EventSet::IN)) {
             info!("[Memory] Failed to register activate event: {}", err);
         }
     }
     fn register_runtime_events(&self, ops: &mut EventOps) {
         info!("Memory.register_runtime_events()");
-        if let Err(err) = ops.add(Events::new(
+        if let Err(err) = ops.add(Events::with_data(
             &self.queue_evts[GUEST_REQUESTS_INDEX],
+            Self::PROCESS_VIRTQ_PLUG,
             EventSet::IN,
         )) {
-            error!("[Memory] Failed to register inflate queue event: {}", err);
+            error!("[Memory] Failed to register plug queue event: {}", err);
+        }
+        if let Err(err) = ops.add(Events::with_data(
+            &self.queue_evts[GUEST_REQUESTS_INDEX],
+            Self::PROCESS_VIRTQ_UNPLUG,
+            EventSet::IN,
+        )) {
+            error!("[Memory] Failed to register unplug queue event: {}", err);
+        }
+        if let Err(err) = ops.add(Events::with_data(
+            &self.queue_evts[GUEST_REQUESTS_INDEX],
+            Self::PROCESS_VIRTQ_UNPLUG_ALL,
+            EventSet::IN,
+        )) {
+            error!("[Memory] Failed to register unplug all queue event: {}", err);
+        }
+        if let Err(err) = ops.add(Events::with_data(
+            &self.queue_evts[GUEST_REQUESTS_INDEX],
+            Self::PROCESS_STATE,
+            EventSet::IN,
+        )) {
+            error!("[Memory] Failed to register state queue event: {}", err);
         }
     }
     fn process_activate_event(&self, ops: &mut EventOps) {
@@ -33,7 +58,7 @@ impl Memory {
             info!("Failed to consume memory activate event: {:?}", err);
         }
         self.register_runtime_events(ops);
-        if let Err(err) = ops.remove(Events::with_data(&self.activate_evt, Self::PROCESS_ACTIVATE, EventSet::IN)) {
+        if let Err(err) = ops.remove(Events::new(&self.activate_evt, EventSet::IN)) {
             error!("[Memory] Failed to un-register activate event: {}", err);
         }
     }
@@ -44,7 +69,7 @@ impl MutEventSubscriber for Memory {
         let event_set = event.event_set();
         let supported_events = EventSet::IN;
         if !supported_events.contains(event_set) {
-            warn!(
+            info!(
                 "Received unknown event: {:?} from source: {:?}",
                 event_set, source
             );
@@ -53,12 +78,41 @@ impl MutEventSubscriber for Memory {
         if self.is_activated() {
             let virtq_quest_requests_ev_fd = self.queue_evts[GUEST_REQUESTS_INDEX].as_raw_fd();
             let activate_fd = self.activate_evt.as_raw_fd();
+            info!("Memory.process event fd: {}, ", source);
             match source {
                 _ if source == virtq_quest_requests_ev_fd => {
-                    debug!("virtq_quest_requests_ev_fd")
+                    info!("virtq_quest_requests_ev_fd");
+
+                    let req_type = event.data();
+                    match req_type {
+                        Self::PROCESS_VIRTQ_PLUG => {
+                            info!("virtq_quest_requests_ev_fd: PROCESS_VIRTQ_PLUG");
+                            self.process_plug_queue_event();
+                        }
+                        Self::PROCESS_VIRTQ_UNPLUG => {
+                            info!("virtq_quest_requests_ev_fd: PROCESS_VIRTQ_UNPLUG");
+                            self.process_unplug_queue_event();
+                        
+                        }
+                        Self::PROCESS_VIRTQ_UNPLUG_ALL => {
+                            info!("virtq_quest_requests_ev_fd: PROCESS_VIRTQ_UNPLUG_ALL");
+                            self.process_unplug_all_queue_event();
+                        }
+                        Self::PROCESS_STATE => {
+                            info!("virtq_quest_requests_ev_fd: PROCESS_STATE");
+                            self.process_state_event();
+                        }
+                        _ => {
+                            warn!(
+                                "Memory [{}]: Spurious event received: {:?}",
+                                self.id(),
+                                source
+                            );
+                        }
+                    }
                 }
                 _ if source == activate_fd => {
-                    debug!("activate_fd");
+                    info!("activate_fd");
                     self.process_activate_event(ops);
                 }
                 _ => {

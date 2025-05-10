@@ -47,10 +47,10 @@ impl From<MemoryConfig> for MemoryDeviceConfig {
     fn from(state: MemoryConfig) -> Self {
         MemoryDeviceConfig {
             id: state.id,
-            block_size_kib: state.block_size_kib * KIB,
+            block_size_kib: state.block_size_kib,
             node_id: state.node_id,
-            region_size_kib: state.region_size_kib * KIB,
-            requested_size_kib: state.requested_size_kib * KIB,
+            region_size_kib: state.region_size_kib,
+            requested_size_kib: state.requested_size_kib,
         }
     }
 }
@@ -82,7 +82,7 @@ impl MemoryBuilder {
     }
     /// Creates a Memory device from the MemoryDeviceConfig provided
     fn build(cfg: MemoryDeviceConfig) -> Result<MutexMemory> {
-        info!("build memory device  {:x} {:x} {:x}",
+        info!("build memory device  {} {} {}",
             cfg.block_size_kib,
             cfg.region_size_kib,
             cfg.requested_size_kib
