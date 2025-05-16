@@ -8,11 +8,18 @@ use crate::devices::virtio::memory::GUEST_REQUESTS_INDEX;
 use crate::logger::{error, info, debug};
 use utils::eventfd::EventFd;
 use utils::get_page_size;
+use vm_memory::Bytes;
 use crate::devices::virtio::gen::virtio_blk::VIRTIO_F_VERSION_1;
 use serde::Serialize;
 
 //use vm_memory::{ByteValued, GuestMemoryMmap};
 use crate::vstate::memory::{ByteValued, GuestMemoryMmap};
+use super::{
+    VIRTIO_MEM_REQ_PLUG,
+    VIRTIO_MEM_REQ_UNPLUG,
+    VIRTIO_MEM_REQ_UNPLUG_ALL,
+    VIRTIO_MEM_REQ_STATE,
+};
 use super::super::{ActivateError, TYPE_MEMORY};
 use crate::devices::virtio::device::DeviceState;
 use crate::devices::virtio::device::VirtioDevice;
@@ -22,6 +29,9 @@ use crate::devices::virtio::memory::MemoryDeviceError as MemoryError;
 use crate::devices::virtio::device::{ IrqTrigger, IrqType };
 
 const KIB: u64 = 1024;
+
+
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -77,6 +87,16 @@ pub struct Memory {
     pub(crate) id: String,
     addr_is_set: bool,
 }
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VirtioMemReq {
+    pub req_type: u16, 
+    pub padding: [u16; 3],
+    pub data: [u8; 16], // the union field
+}
+
+// Safety?
+unsafe impl ByteValued for VirtioMemReq {}
 
 impl Memory {
     pub fn new(
@@ -126,9 +146,9 @@ impl Memory {
                 _padding: [0u8; 6],
                 addr: 0u64,
                 region_size,
-                usable_region_size: 0u64,
+                usable_region_size: requested_size,
                 plugged_size: 0u64,
-                requested_size: 0u64,
+                requested_size: requested_size,
             },
             id,
             irq_trigger: IrqTrigger::new().map_err(MemoryError::EventFd)?,
@@ -196,6 +216,47 @@ impl Memory {
         Ok(())
     }
 
+    pub(crate) fn process_request_queue_event(&mut self) -> MemoryResult<()> {
+
+        while let Some(head) = self.queues[GUEST_REQUESTS_INDEX].pop(self.device_state.mem().unwrap()) {
+            if head.len as usize >= std::mem::size_of::<VirtioMemReq>() {
+                let req: VirtioMemReq = self.device_state.mem().unwrap()
+                    .read_obj(head.addr)
+                    .map_err(|_| MemoryError::GuestMemory)?;
+
+                info!("virtio-mem request received: {}", req.req_type);
+
+                match req.req_type {
+                    VIRTIO_MEM_REQ_PLUG => {
+                        info!("VIRTIO_MEM_REQ_PLUG");
+                        self.process_plug_queue_event()?;
+                    }
+                    VIRTIO_MEM_REQ_UNPLUG => {
+                        info!("VIRTIO_MEM_REQ_UNPLUG");
+                        self.process_unplug_queue_event()?;
+                    }
+                    VIRTIO_MEM_REQ_UNPLUG_ALL => {
+                        info!("VIRTIO_MEM_REQ_UNPLUG_ALL");
+                        self.process_unplug_all_queue_event()?;
+                    }
+                    VIRTIO_MEM_REQ_STATE => {
+                        info!("Handling VIRTIO_MEM_REQ_STATE");
+                        self.process_state_event()?;
+                    }
+                    _ => {
+                        error!("Unknown request type: {}", req.req_type);
+                        return Err(MemoryError::GuestMemory);
+                    }
+                }
+            } else {
+                error!("Invalid request size: expected at least {} bytes", std::mem::size_of::<VirtioMemReq>());
+                return Err(MemoryError::GuestMemory);
+            }
+        }
+
+        Ok(())
+    }   
+
     #[inline]
     fn addr_is_set(&self) -> bool {
         self.addr_is_set
@@ -240,6 +301,10 @@ impl Memory {
         if self.is_activated() {
             info!("Device active");
             self.config_space.requested_size = requested_size_kib * KIB;
+            // update usable region size if needed
+            if(self.config_space.usable_region_size < self.config_space.requested_size) {
+                self.config_space.usable_region_size = self.config_space.requested_size;
+            }
             self.irq_trigger
                 .trigger_irq(IrqType::Config)
                 .map_err(MemoryError::InterruptError)

@@ -10,6 +10,13 @@ pub const CONFIG_SPACE_SIZE: usize = 56;
 // The feature bitmap for virtio memory.
 const _VIRTIO_MEM_F_ACPI_PXM: u32 = 0; // The node id is valid and corresponds to an ACPI PXM.
 const _VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE: u32 = 1; // The driver is not allowed to access unplugged memory.
+
+// Virtio-mem request types
+const VIRTIO_MEM_REQ_PLUG: u16 = 0;
+const VIRTIO_MEM_REQ_UNPLUG: u16 = 1;
+const VIRTIO_MEM_REQ_UNPLUG_ALL: u16 = 2;
+const VIRTIO_MEM_REQ_STATE: u16 = 3;
+
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
 pub enum MemoryDeviceError {
     /// Activation error.
@@ -34,6 +41,8 @@ pub enum MemoryDeviceError {
     InterruptError(std::io::Error),
     /// Size is not a multiple of Block Size.
     SizeNotMultipleOfBlockSize,
+    /// Guest Memmory Error
+    GuestMemory
 } 
 
 pub type MemoryResult<T> = std::result::Result<T, MemoryDeviceError>;
