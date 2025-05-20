@@ -4,12 +4,15 @@
 use std::cmp;
 use std::io::Write;
 use std::result::Result;
+use std::mem::size_of;
 use crate::devices::virtio::memory::GUEST_REQUESTS_INDEX;
 use crate::logger::{error, info, debug};
 use utils::eventfd::EventFd;
 use utils::get_page_size;
-use vm_memory::Bytes;
+use vm_memory::bitmap::AtomicBitmap;
+use vm_memory::{Bytes, GuestMemory};
 use crate::devices::virtio::gen::virtio_blk::VIRTIO_F_VERSION_1;
+use crate::vstate::memory::GuestAddress;
 use serde::Serialize;
 
 //use vm_memory::{ByteValued, GuestMemoryMmap};
@@ -19,6 +22,13 @@ use super::{
     VIRTIO_MEM_REQ_UNPLUG,
     VIRTIO_MEM_REQ_UNPLUG_ALL,
     VIRTIO_MEM_REQ_STATE,
+    VIRTIO_MEM_RESP_ACK,
+    VIRTIO_MEM_RESP_NACK,
+    VIRTIO_MEM_RESP_BUSY,
+    VIRTIO_MEM_RESP_ERROR,
+    VIRTIO_MEM_STATE_PLUGGED,
+    VIRTIO_MEM_STATE_UNPLUGGED,
+    VIRTIO_MEM_STATE_MIXED,
 };
 use super::super::{ActivateError, TYPE_MEMORY};
 use crate::devices::virtio::device::DeviceState;
@@ -29,9 +39,7 @@ use crate::devices::virtio::memory::MemoryDeviceError as MemoryError;
 use crate::devices::virtio::device::{ IrqTrigger, IrqType };
 
 const KIB: u64 = 1024;
-
-
-
+const GIB: u64 = 1024 * 1024 * 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -41,7 +49,7 @@ pub(crate) struct ConfigSpace {
     _padding: [u8; 6],
 
     // guest physical addres from where the memory region starts
-    // maybe init this to 32 * Gib
+    // maybe init this to 32 * Gib (?)
     pub addr: u64, 
     pub region_size: u64,
     pub usable_region_size: u64,
@@ -89,14 +97,41 @@ pub struct Memory {
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
+pub struct VirtioMemReqData {
+    pub addr: u64,
+    pub nb_blocks: u16,
+    pub padding: [u16; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct VirtioMemReq {
     pub req_type: u16, 
     pub padding: [u16; 3],
-    pub data: [u8; 16], // the union field
+    pub data: VirtioMemReqData // the union field
 }
 
-// Safety?
 unsafe impl ByteValued for VirtioMemReq {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VirtioMemResp {
+    pub resp_type: u16,
+    pub padding: [u16; 3],
+    pub state: u16,
+}
+
+unsafe impl ByteValued for VirtioMemResp {}
+
+impl VirtioMemResp {
+    pub fn new(resp_type: u16, state: u16) -> Self {
+        Self {
+            resp_type,
+            padding: Default::default(),
+            state,
+        }
+    }
+}
 
 impl Memory {
     pub fn new(
@@ -144,7 +179,7 @@ impl Memory {
                 block_size,
                 node_id: node_id.unwrap_or_default(),
                 _padding: [0u8; 6],
-                addr: 0u64,
+                addr: 32 * GIB,
                 region_size,
                 usable_region_size: requested_size,
                 plugged_size: 0u64,
@@ -158,35 +193,7 @@ impl Memory {
             queue_evts,
         })
     }
-
-    pub(crate) fn process_plug_queue_event(&mut self) -> MemoryResult<()> {
-        info!("Memory.process_plug_queue_event");
-        self.queue_evts[GUEST_REQUESTS_INDEX]
-            .read()
-            .map_err(MemoryError::EventFd)?;
-        self.process_plug()
-    }   
-    pub(crate) fn process_unplug_queue_event(&mut self) -> MemoryResult<()> {
-        info!("Memory.process_unplug_queue_event");
-        self.queue_evts[GUEST_REQUESTS_INDEX]
-            .read()
-            .map_err(MemoryError::EventFd)?;
-        self.process_unplug()
-    }
-    pub(crate) fn process_unplug_all_queue_event(&mut self) -> MemoryResult<()> {
-        info!("Memory.process_unplug_all_queue_event");
-        self.queue_evts[GUEST_REQUESTS_INDEX]
-            .read()
-            .map_err(MemoryError::EventFd)?;
-        self.process_unplug_all()
-    }
-    pub(crate) fn process_state_event(&mut self) -> MemoryResult<()> {
-        info!("Memory.process_state_event");
-        self.queue_evts[GUEST_REQUESTS_INDEX]
-            .read()
-            .map_err(MemoryError::EventFd)?;
-        self.process_state()
-    }
+ 
     /// Process device virtio queue.
     pub(crate) fn process_guest_request_queue(&mut self) {
         // TODO
@@ -194,60 +201,117 @@ impl Memory {
         debug!("Memory.process_guest_requests_queue");
     }
 
-    pub(crate) fn process_plug(&mut self) -> MemoryResult<()> {
-        // TODO
+    fn any_block_already_plugged(&self, addr: u64, nb_blocks: u16, bitmap: &AtomicBitmap) -> bool {
+        for i in 0..nb_blocks {
+            let offset = addr + (i as u64 * self.block_size()); 
+
+            if bitmap.is_addr_set(offset as usize)  {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn process_plug(&mut self, addr: u64, nb_blocks: u16) -> MemoryResult<VirtioMemResp> {
         info!("Memory.process_plug");
 
-        Ok(())
+        // TODO: test these
+        if addr % self.block_size() != 0 || nb_blocks == 0 {
+            return Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0));
+        }
+
+        let usable_region_end = self.config_space.addr.checked_add(self.config_space.usable_region_size).unwrap();
+        let plug_size = nb_blocks as u64 * self.block_size();
+        if
+            addr < self.config_space.addr
+            || addr + plug_size > usable_region_end
+        {
+            return Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0));
+        }
+        
+        // check if any of the request block is in plugged state in the bitmap
+        let bitmap = self.bitmap()?;
+        if self.any_block_already_plugged(addr, nb_blocks, bitmap) {
+            return Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_BUSY, 0));
+        }
+
+        bitmap.set_addr_range(addr as usize, plug_size as usize);
+        
+        self.config_space.plugged_size += plug_size;
+
+        info!("succesful plug of {} blocks at addr {}", nb_blocks, addr);
+        Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_ACK, VIRTIO_MEM_STATE_PLUGGED))
     }
-    pub(crate) fn process_unplug(&mut self) -> MemoryResult<()> {
+
+    pub(crate) fn process_unplug(&mut self) -> VirtioMemResp {
         // TODO
         info!("Memory.process_unplug");
-        Ok(())
+        VirtioMemResp::new(VIRTIO_MEM_RESP_NACK, VIRTIO_MEM_STATE_UNPLUGGED)
     }
-    pub(crate) fn process_unplug_all(&mut self) -> MemoryResult<()> {
+    pub(crate) fn process_unplug_all(&mut self) -> VirtioMemResp {
         // TODO
         info!("Memory.process_unplug_all");
-        Ok(())
+        VirtioMemResp::new(VIRTIO_MEM_RESP_NACK, VIRTIO_MEM_STATE_UNPLUGGED)
     }
-    pub(crate) fn process_state(&mut self) -> MemoryResult<()> {
+    pub(crate) fn process_state(&mut self) -> VirtioMemResp {
         // TODO
         info!("Memory.process_state");
-        Ok(())
+        VirtioMemResp::new(VIRTIO_MEM_RESP_NACK, VIRTIO_MEM_STATE_UNPLUGGED)
     }
 
     pub(crate) fn process_request_queue_event(&mut self) -> MemoryResult<()> {
 
         while let Some(head) = self.queues[GUEST_REQUESTS_INDEX].pop(self.device_state.mem().unwrap()) {
-            if head.len as usize >= std::mem::size_of::<VirtioMemReq>() {
+            if head.len as usize >= size_of::<VirtioMemReq>() {
+                let head_addr = head.addr;
+                let head_index = head.index;
+
                 let req: VirtioMemReq = self.device_state.mem().unwrap()
-                    .read_obj(head.addr)
+                    .read_obj(head_addr)
                     .map_err(|_| MemoryError::GuestMemory)?;
 
                 info!("virtio-mem request received: {}", req.req_type);
 
-                match req.req_type {
-                    VIRTIO_MEM_REQ_PLUG => {
-                        info!("VIRTIO_MEM_REQ_PLUG");
-                        self.process_plug_queue_event()?;
-                    }
-                    VIRTIO_MEM_REQ_UNPLUG => {
-                        info!("VIRTIO_MEM_REQ_UNPLUG");
-                        self.process_unplug_queue_event()?;
-                    }
-                    VIRTIO_MEM_REQ_UNPLUG_ALL => {
-                        info!("VIRTIO_MEM_REQ_UNPLUG_ALL");
-                        self.process_unplug_all_queue_event()?;
-                    }
-                    VIRTIO_MEM_REQ_STATE => {
-                        info!("Handling VIRTIO_MEM_REQ_STATE");
-                        self.process_state_event()?;
-                    }
-                    _ => {
-                        error!("Unknown request type: {}", req.req_type);
-                        return Err(MemoryError::GuestMemory);
-                    }
-                }
+                self.queue_evts[GUEST_REQUESTS_INDEX]
+                    .read()
+                    .map_err(MemoryError::EventFd)?;
+
+                let resp = match req.req_type {
+                        VIRTIO_MEM_REQ_PLUG => {
+                            info!("VIRTIO_MEM_REQ_PLUG");
+                            self.process_plug(req.data.addr, req.data.nb_blocks)
+                        }
+                        
+                        VIRTIO_MEM_REQ_UNPLUG => {
+                            info!("VIRTIO_MEM_REQ_UNPLUG");
+                            todo!("unplug request");
+                        }
+                        VIRTIO_MEM_REQ_UNPLUG_ALL => {
+                            info!("VIRTIO_MEM_REQ_UNPLUG_ALL");
+                            todo!("unplug all request");
+                        }
+                        VIRTIO_MEM_REQ_STATE => {
+                            info!("Handling VIRTIO_MEM_REQ_STATE");
+                            todo!("state request");}
+                        _ => {
+                            error!("Unknown request type: {}", req.req_type);
+                            todo!("unknown request type");
+                        }
+                        
+                }?;
+
+                info!("Memory sending response: {:?}", resp);
+                self.device_state.mem().unwrap()
+                    .write_obj(resp, head_addr)
+                    .map_err(|_| MemoryError::GuestMemory)?;
+                self.queues[GUEST_REQUESTS_INDEX]
+                    .add_used(self.device_state.mem().unwrap(), head_index, size_of::<VirtioMemResp>() as u32)
+                    .map_err(MemoryError::Queue)?;
+                /* 
+                self.irq_trigger
+                    .trigger_irq(IrqType::Vring)
+                    .map_err(MemoryError::InterruptError)?;
+                */
             } else {
                 error!("Invalid request size: expected at least {} bytes", std::mem::size_of::<VirtioMemReq>());
                 return Err(MemoryError::GuestMemory);
@@ -291,6 +355,21 @@ impl Memory {
         self.config_space.node_id
     }
 
+    /// Returns the bitmap of the device.
+    pub fn bitmap(&self) -> Result<&AtomicBitmap, MemoryError> {
+        if !self.is_activated() {
+            return Err(MemoryError::DeviceNotActive);
+        }
+        // Safe since the device is activated
+        let mem: &vm_memory::GuestMemoryMmap<Option<vm_memory::bitmap::AtomicBitmap>> = self.device_state.mem().unwrap();
+        let bitmap: &AtomicBitmap = mem.find_region(GuestAddress(self.config_space.addr))
+            .ok_or(MemoryError::GuestMemory)?
+            .bitmap()
+            .as_ref()
+            .ok_or(MemoryError::BitmapNotPresent)?;
+        Ok(bitmap)
+    }
+
     /// Handle
     pub fn change_requested_size(&mut self, requested_size_kib: u64) -> MemoryResult<()> {
         info!(
@@ -302,7 +381,7 @@ impl Memory {
             info!("Device active");
             self.config_space.requested_size = requested_size_kib * KIB;
             // update usable region size if needed
-            if(self.config_space.usable_region_size < self.config_space.requested_size) {
+            if self.config_space.usable_region_size < self.config_space.requested_size {
                 self.config_space.usable_region_size = self.config_space.requested_size;
             }
             self.irq_trigger

@@ -3,6 +3,7 @@
 pub mod device;
 pub mod event_handler;
 pub use self::device::{ Memory, MemoryConfig };
+use super::queue::QueueError;
 pub const QUEUE_SIZE: u16 = 256;
 // the index of guest requests queue from Memory device queues/queues_evts vector.
 pub const GUEST_REQUESTS_INDEX: usize = 0;
@@ -16,6 +17,17 @@ const VIRTIO_MEM_REQ_PLUG: u16 = 0;
 const VIRTIO_MEM_REQ_UNPLUG: u16 = 1;
 const VIRTIO_MEM_REQ_UNPLUG_ALL: u16 = 2;
 const VIRTIO_MEM_REQ_STATE: u16 = 3;
+
+// Virtio-mem response types
+const VIRTIO_MEM_RESP_ACK: u16 = 0;
+const VIRTIO_MEM_RESP_NACK: u16 = 1;
+const VIRTIO_MEM_RESP_BUSY: u16 = 2;
+const VIRTIO_MEM_RESP_ERROR: u16 = 3;
+
+// Virtio-mem state types
+const VIRTIO_MEM_STATE_PLUGGED: u16 = 0;
+const VIRTIO_MEM_STATE_UNPLUGGED: u16 = 1;
+const VIRTIO_MEM_STATE_MIXED: u16 = 2;
 
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
 pub enum MemoryDeviceError {
@@ -42,7 +54,11 @@ pub enum MemoryDeviceError {
     /// Size is not a multiple of Block Size.
     SizeNotMultipleOfBlockSize,
     /// Guest Memmory Error
-    GuestMemory
+    GuestMemory,
+    /// Error while processing the virtq
+    Queue(QueueError),
+    /// Bitmap is not initializeds
+    BitmapNotPresent
 } 
 
 pub type MemoryResult<T> = std::result::Result<T, MemoryDeviceError>;

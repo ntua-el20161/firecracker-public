@@ -1082,10 +1082,14 @@ fn build_guarded_region(
     }
 
     let bitmap = match track_dirty_pages {  
-        true => Some(AtomicBitmap::with_len(size)),
+        true => {
+            info!("with bitmap");
+            Some(AtomicBitmap::with_len(size))
+        }
         false => None,
     };
 
+    info!("bitmap : {:?}", bitmap);
     unsafe {
         MmapRegionBuilder::new_with_bitmap(size, bitmap)
             .with_raw_mmap_pointer(region_addr as *mut u8)
@@ -1142,9 +1146,10 @@ fn attach_memory_devices<'a>(
         let region_start_address = 32 * GIB;
         
         // Creating the actual memory backend for this memory device.
+        // CHANGE: track_dirty_pages was set to true so the bitmap can be created
         let this_device_memory = create_guest_memory(
             &[(None, GuestAddress(region_start_address), size)],
-            false,
+            true,
         )
         .map_err(StartMicrovmError::GuestMemory)?;
 

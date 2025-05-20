@@ -1,7 +1,7 @@
 use super::super::parsed_request::{ParsedRequest, RequestError};
 use vmm::rpc_interface::VmmAction;
 use vmm::logger::info;
-use vmm::vmm_config::memory::{ MemoryDeviceConfig, MemoryUpdateConfig };
+use vmm::vmm_config::memory::MemoryUpdateConfig;
 use super::Body;
 
 pub(crate) fn parse_get_memory() -> Result<ParsedRequest, RequestError> {
