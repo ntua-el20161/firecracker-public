@@ -4,6 +4,8 @@ the config_vm template (the template exists in repo root) as follows:
 ```
 sudo ./firecracker --config-file config_vm
 ```
+
+**GET config request**  
 ```
 socket_location=...
 
@@ -11,7 +13,7 @@ curl --unix-socket $socket_location -i \
     -X GET 'http://localhost/memory-device' \
     -H 'Accept: application/json'
 ```
-
+**PATCH resize request**
 ```
 socket_location=...
 requested_size=...
