@@ -8,6 +8,7 @@ pub const QUEUE_SIZE: u16 = 256;
 // the index of guest requests queue from Memory device queues/queues_evts vector.
 pub const GUEST_REQUESTS_INDEX: usize = 0;
 pub const CONFIG_SPACE_SIZE: usize = 56;
+
 // The feature bitmap for virtio memory.
 const _VIRTIO_MEM_F_ACPI_PXM: u32 = 0; // The node id is valid and corresponds to an ACPI PXM.
 const _VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE: u32 = 1; // The driver is not allowed to access unplugged memory.

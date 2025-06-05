@@ -1089,7 +1089,6 @@ fn build_guarded_region(
         false => None,
     };
 
-    info!("bitmap : {:?}", bitmap);
     unsafe {
         MmapRegionBuilder::new_with_bitmap(size, bitmap)
             .with_raw_mmap_pointer(region_addr as *mut u8)
@@ -1116,7 +1115,7 @@ pub fn create_guest_memory(
         let mmap_region =
             build_guarded_region(region.0.clone(), region.2, prot, flags, track_dirty_pages)
                 .map_err(MemoryError::MmapRegionError)?;
-
+        
         let guest_region = GuestRegionMmap::new(mmap_region, region.1)
             .map_err(MemoryError::VmMemoryError)?;
         mmap_regions.push(guest_region);
@@ -1142,17 +1141,15 @@ fn attach_memory_devices<'a>(
         // The device mutex mustn't be locked here otherwise it will deadlock.
         attach_virtio_device(event_manager, vmm, id, memory.clone(), cmdline, false)?;
         // For now, when developing/testing with only one memory device, this hardcoded address
-        // should suffice.
+        // should suffice.    
         let region_start_address = 32 * GIB;
         
         // Creating the actual memory backend for this memory device.
-        // CHANGE: track_dirty_pages was set to true so the bitmap can be created
-        let this_device_memory = create_guest_memory(
+        let this_device_memory: vm_memory::GuestMemoryMmap<Option<AtomicBitmap>> = create_guest_memory(
             &[(None, GuestAddress(region_start_address), size)],
-            true,
+            false,
         )
         .map_err(StartMicrovmError::GuestMemory)?;
-
         // Adding the memory to the VM.
         vmm.vm
             .add_memory(&this_device_memory)

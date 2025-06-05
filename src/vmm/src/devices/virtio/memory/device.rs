@@ -7,6 +7,7 @@ use std::result::Result;
 use std::mem::size_of;
 use crate::devices::virtio::memory::GUEST_REQUESTS_INDEX;
 use crate::logger::{error, info, debug};
+use aes_gcm::aes::Block;
 use utils::eventfd::EventFd;
 use utils::get_page_size;
 use vm_memory::bitmap::AtomicBitmap;
@@ -54,7 +55,7 @@ pub(crate) struct ConfigSpace {
     pub region_size: u64,
     pub usable_region_size: u64,
     pub plugged_size: u64,
-    pub requested_size: u64,
+    pub requested_size: u64
 }
 // Safe because ConfigSpace only contains plain data.
 unsafe impl ByteValued for ConfigSpace {}
@@ -94,6 +95,7 @@ pub struct Memory {
     // Implementation specific fields.
     pub(crate) id: String,
     addr_is_set: bool,
+    memory_bitmap: MemBitmap,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -122,6 +124,43 @@ pub struct VirtioMemResp {
 }
 
 unsafe impl ByteValued for VirtioMemResp {}
+
+#[derive(Clone, Debug, Default)]
+pub struct MemBitmap {
+    bitmap: Vec<bool>,
+}
+
+impl MemBitmap {
+    pub fn new(region_size: u64, block_size: u64) -> Self {
+        MemBitmap {
+            bitmap: vec![false; (region_size / block_size) as usize],
+        }
+    }
+
+    fn is_range_state(&self, first_block_index: usize, nb_blocks: u16, plugged: bool) -> bool {
+        for block in self
+            .bitmap
+            .iter()
+            .skip(first_block_index)
+            .take(nb_blocks as usize) 
+        {
+            if *block != plugged {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn set_range_state(&mut self, first_block_index: usize, nb_blocks: u16, plugged: bool) {
+        for block in self
+            .bitmap.iter_mut()
+            .skip(first_block_index)
+            .take(nb_blocks as usize) 
+        {
+            *block = plugged;
+        }
+    }
+}
 
 impl VirtioMemResp {
     pub fn new(resp_type: u16, state: u16) -> Self {
@@ -171,10 +210,12 @@ impl Memory {
             "Memory::new({}, {:?}, {}, {})",
             block_size, node_id, region_size, id
         );
+        let bitmap = MemBitmap::new(region_size, block_size);
         Ok(Memory {
             avail_features,
             acked_features: 0u64,
             addr_is_set: false,
+            memory_bitmap: bitmap,
             config_space: ConfigSpace {
                 block_size,
                 node_id: node_id.unwrap_or_default(),
@@ -201,22 +242,12 @@ impl Memory {
         debug!("Memory.process_guest_requests_queue");
     }
 
-    fn any_block_already_plugged(&self, addr: u64, nb_blocks: u16, bitmap: &AtomicBitmap) -> bool {
-        for i in 0..nb_blocks {
-            let offset = addr + (i as u64 * self.block_size()); 
-
-            if bitmap.is_addr_set(offset as usize)  {
-                return true;
-            }
-        }
-        false
-    }
-
     pub(crate) fn process_plug(&mut self, addr: u64, nb_blocks: u16) -> MemoryResult<VirtioMemResp> {
         info!("Memory.process_plug");
 
         // TODO: test these
         if addr % self.block_size() != 0 || nb_blocks == 0 {
+            info!("Plug request invalid: addr {}, nb_blocks {}", addr, nb_blocks);
             return Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0));
         }
 
@@ -226,27 +257,69 @@ impl Memory {
             addr < self.config_space.addr
             || addr + plug_size > usable_region_end
         {
+            info!("Plug request out of usable region bounds: addr {}, plug_size {}, usable_region_end {}", addr, plug_size, usable_region_end);
             return Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0));
         }
         
-        // check if any of the request block is in plugged state in the bitmap
-        let bitmap = self.bitmap()?;
-        if self.any_block_already_plugged(addr, nb_blocks, bitmap) {
-            return Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_BUSY, 0));
+        let offset = addr - self.config_space.addr;
+        let first_block_index = (offset / self.block_size()) as usize;
+
+        // check if any of the request blocks is in plugged state in the bitmap
+        let bitmap = &mut self.memory_bitmap;
+        if bitmap.is_range_state(first_block_index, nb_blocks, true) {
+            info!("Plug request overlaps with already plugged blocks: addr {}, nb_blocks {}", addr, nb_blocks);
+            return Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0));
         }
 
-        bitmap.set_addr_range(addr as usize, plug_size as usize);
-        
+        bitmap.set_range_state(first_block_index, nb_blocks, true);
+
         self.config_space.plugged_size += plug_size;
 
         info!("succesful plug of {} blocks at addr {}", nb_blocks, addr);
         Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_ACK, VIRTIO_MEM_STATE_PLUGGED))
     }
 
-    pub(crate) fn process_unplug(&mut self) -> VirtioMemResp {
-        // TODO
+    pub(crate) fn process_unplug(&mut self, addr: u64, nb_blocks: u16) -> MemoryResult<VirtioMemResp> {
         info!("Memory.process_unplug");
-        VirtioMemResp::new(VIRTIO_MEM_RESP_NACK, VIRTIO_MEM_STATE_UNPLUGGED)
+        if addr % self.block_size() != 0 || nb_blocks == 0 {
+            info!("Plug request invalid: addr {}, nb_blocks {}", addr, nb_blocks);
+            return Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0));
+        }
+
+        let usable_region_end = self.config_space.addr.checked_add(self.config_space.usable_region_size).unwrap();
+        let unplug_size = nb_blocks as u64 * self.block_size();
+        if
+            addr < self.config_space.addr
+            || addr + unplug_size > usable_region_end
+        {
+            info!("Unplug request out of usable region bounds: addr {}, plug_size {}, usable_region_end {}", addr, unplug_size, usable_region_end);
+            return Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0));
+        }
+        
+        let offset = addr - self.config_space.addr;
+        let first_block_index = (offset / self.block_size()) as usize;
+
+        // for now the memory region is not backed by a file (src>vmm>src>builder.rs:1150)
+        let res = unsafe {
+            libc::madvise(
+
+            )
+        };
+
+        // check if any of the request blocks is in plugged state in the bitmap
+        let bitmap = &mut self.memory_bitmap;
+        if bitmap.is_range_state(first_block_index, nb_blocks, false) {
+            info!("Unplug request overlaps with already plugged blocks: addr {}, nb_blocks {}", addr, nb_blocks);
+            return Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0));
+        }
+
+
+        bitmap.set_range_state(first_block_index, nb_blocks, false);
+
+        self.config_space.plugged_size -= unplug_size;
+
+        info!("succesful plug of {} blocks at addr {}", nb_blocks, addr);
+        Ok(VirtioMemResp::new(VIRTIO_MEM_RESP_NACK, VIRTIO_MEM_STATE_UNPLUGGED))
     }
     pub(crate) fn process_unplug_all(&mut self) -> VirtioMemResp {
         // TODO
@@ -307,11 +380,7 @@ impl Memory {
                 self.queues[GUEST_REQUESTS_INDEX]
                     .add_used(self.device_state.mem().unwrap(), head_index, size_of::<VirtioMemResp>() as u32)
                     .map_err(MemoryError::Queue)?;
-                /* 
-                self.irq_trigger
-                    .trigger_irq(IrqType::Vring)
-                    .map_err(MemoryError::InterruptError)?;
-                */
+                
             } else {
                 error!("Invalid request size: expected at least {} bytes", std::mem::size_of::<VirtioMemReq>());
                 return Err(MemoryError::GuestMemory);
@@ -353,21 +422,6 @@ impl Memory {
 
     pub fn node_id(&self) -> u16 {
         self.config_space.node_id
-    }
-
-    /// Returns the bitmap of the device.
-    pub fn bitmap(&self) -> Result<&AtomicBitmap, MemoryError> {
-        if !self.is_activated() {
-            return Err(MemoryError::DeviceNotActive);
-        }
-        // Safe since the device is activated
-        let mem: &vm_memory::GuestMemoryMmap<Option<vm_memory::bitmap::AtomicBitmap>> = self.device_state.mem().unwrap();
-        let bitmap: &AtomicBitmap = mem.find_region(GuestAddress(self.config_space.addr))
-            .ok_or(MemoryError::GuestMemory)?
-            .bitmap()
-            .as_ref()
-            .ok_or(MemoryError::BitmapNotPresent)?;
-        Ok(bitmap)
     }
 
     /// Handle
