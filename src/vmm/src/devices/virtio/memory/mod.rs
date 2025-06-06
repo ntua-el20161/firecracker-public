@@ -36,6 +36,8 @@ pub enum MemoryDeviceError {
     Activate(super::ActivateError),
     /// Start address already set
     AddressAlreadySet,
+    /// Bitmap is not initializeds
+    BitmapNotPresent,
     /// Block Size is zero bytes.
     BlockSizeIsZero,
     /// Block Size not a multiple of page size.
@@ -48,18 +50,24 @@ pub enum MemoryDeviceError {
     DeviceNotFound,
     /// EventFd error.
     EventFd(std::io::Error),
-    /// Quereying page size error.
-    PageSize(utils::errno::Error),
-    /// Error while sending an interrupt
-    InterruptError(std::io::Error),
-    /// Size is not a multiple of Block Size.
-    SizeNotMultipleOfBlockSize,
     /// Guest Memmory Error
     GuestMemory,
+    /// Host region start address already set.
+    HostAddressAlreadySet,
+    /// Error while sending an interrupt
+    InterruptError(std::io::Error),
+    /// Quereying page size error.
+    PageSize(utils::errno::Error),
     /// Error while processing the virtq
     Queue(QueueError),
-    /// Bitmap is not initializeds
-    BitmapNotPresent
+    /// Requested size exceed the size of the usable region.
+    RequestedSizeTooLarge,
+    /// Failed to send response to the guest.
+    ResponseSendFailure,
+    /// Size is not a multiple of Block Size.
+    SizeNotMultipleOfBlockSize,
+    /// Request type is none of the supported types.
+    UnknownRequestType(u16),
 } 
 
 pub type MemoryResult<T> = std::result::Result<T, MemoryDeviceError>;

@@ -3,7 +3,7 @@
 
 use std::os::unix::io::AsRawFd;
 use event_manager::{EventOps, Events, MutEventSubscriber};
-use crate::logger::{debug, error, warn, info};
+use crate::logger::{error, info};
 use utils::epoll::EventSet;
 use crate::devices::virtio::memory::device::Memory;
 use crate::devices::virtio::memory::GUEST_REQUESTS_INDEX;
@@ -50,7 +50,14 @@ impl MutEventSubscriber for Memory {
             let activate_fd = self.activate_evt.as_raw_fd();
             match source {
                 _ if source == virtq_quest_requests_ev_fd => {
-                    self.process_request_queue_event();
+                    self.process_request_queue_event()
+                    .unwrap_or_else(|e| {
+                        error!(
+                            "Memory [{}]: Failed to process request queue event: {}",
+                            self.id(),
+                            e
+                        );
+                    });
                 }
                 _ if source == activate_fd => {
                     info!("activate_fd");

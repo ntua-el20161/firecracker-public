@@ -52,6 +52,8 @@ pub enum MemoryError {
     MemfdSetLen(std::io::Error),
     /// Cannot restore hugetlbfs backed snapshot by mapping the memory file. Please use uffd.
     HugetlbfsSnapshot,
+    /// Couldnt find the memory region for the given address.
+    RegionNotFound,
 }
 
 /// Defines the interface for snapshotting memory.

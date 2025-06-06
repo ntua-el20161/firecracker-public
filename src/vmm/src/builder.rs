@@ -1150,6 +1150,13 @@ fn attach_memory_devices<'a>(
             false,
         )
         .map_err(StartMicrovmError::GuestMemory)?;
+
+        let region = this_device_memory.find_region(GuestAddress(region_start_address))
+            .ok_or(StartMicrovmError::GuestMemory(MemoryError::RegionNotFound))?;
+        memory.lock()
+            .expect("Poisoned lock")
+            .set_host_addr(region.as_ptr() as u64)
+            .map_err(StartMicrovmError::MemoryDevice)?;
         // Adding the memory to the VM.
         vmm.vm
             .add_memory(&this_device_memory)
