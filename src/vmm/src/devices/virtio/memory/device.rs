@@ -417,7 +417,9 @@ impl Memory {
                 self.queues[GUEST_REQUESTS_INDEX]
                     .add_used(self.device_state.mem().unwrap(), head_index, size_of::<VirtioMemResp>() as u32)
                     .map_err(MemoryError::Queue)?;
-                
+                self.irq_trigger
+                    .trigger_irq(IrqType::Vring)
+                    .map_err(MemoryError::InterruptError)?;
             } else {
                 error!("Invalid request size: expected at least {} bytes", std::mem::size_of::<VirtioMemReq>());
                 return Err(MemoryError::GuestMemory);
