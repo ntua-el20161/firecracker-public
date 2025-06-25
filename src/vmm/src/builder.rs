@@ -24,6 +24,7 @@ use userfaultfd::Uffd;
 use utils::eventfd::EventFd;
 use utils::time::TimestampUs;
 use utils::u64_to_usize;
+use vm_memory::Address;
 use vm_memory::bitmap::AtomicBitmap;
 use vm_memory::mmap::{check_file_offset, MmapRegionBuilder, MmapRegionError, NewBitmap};
 use vm_memory::{FileOffset, GuestRegionMmap, ReadVolatile};
@@ -1140,9 +1141,8 @@ fn attach_memory_devices<'a>(
         let size: usize = memory.lock().expect("Poisoned lock").region_size() as usize;
         // The device mutex mustn't be locked here otherwise it will deadlock.
         attach_virtio_device(event_manager, vmm, id, memory.clone(), cmdline, false)?;
-        // For now, when developing/testing with only one memory device, this hardcoded address
-        // should suffice.    
-        let region_start_address = 32 * GIB;
+        
+        let region_start_address = vmm.guest_memory.last_addr().unchecked_add(1).0;
         
         // Creating the actual memory backend for this memory device.
         let this_device_memory: vm_memory::GuestMemoryMmap<Option<AtomicBitmap>> = create_guest_memory(
