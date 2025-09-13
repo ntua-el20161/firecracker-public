@@ -117,6 +117,7 @@ pub fn configure_system(
     cmdline_size: usize,
     initrd: &Option<InitrdConfig>,
     num_cpus: u8,
+    boot_last_addr: GuestAddress
 ) -> Result<(), ConfigurationError> {
     const KERNEL_BOOT_FLAG_MAGIC: u16 = 0xaa55;
     const KERNEL_HDR_MAGIC: u32 = 0x5372_6448;
@@ -158,7 +159,9 @@ pub fn configure_system(
         E820_RESERVED,
     )?;
 
-    let last_addr = guest_mem.last_addr();
+    //let last_addr = guest_mem.last_addr();
+    let last_addr = boot_last_addr;
+    
     if last_addr < end_32bit_gap_start {
         add_e820_entry(
             &mut params,

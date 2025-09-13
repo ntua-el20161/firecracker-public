@@ -134,6 +134,7 @@ impl MmioTransport {
     }
 
     fn update_queue_field<F: FnOnce(&mut Queue)>(&mut self, f: F) {
+        info!("mmio.update_queue_field, device");
         if self.check_device_status(
             device_status::FEATURES_OK,
             device_status::DRIVER_OK | device_status::FAILED,

@@ -4,6 +4,7 @@
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 
+use log::info;
 use vm_memory::{GuestMemoryError, ReadVolatile, WriteVolatile};
 
 use crate::vstate::memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
@@ -40,6 +41,7 @@ impl SyncFileEngine {
 
     /// Update the backing file of the engine
     pub fn update_file(&mut self, file: File) {
+        info!("SyncFileEngine: updating backing file");
         self.file = file
     }
 
@@ -50,6 +52,7 @@ impl SyncFileEngine {
         addr: GuestAddress,
         count: u32,
     ) -> Result<u32, SyncIoError> {
+        info!("block_sync_io.read at addr: {addr:?}");
         self.file
             .seek(SeekFrom::Start(offset))
             .map_err(SyncIoError::Seek)?;
@@ -66,6 +69,7 @@ impl SyncFileEngine {
         addr: GuestAddress,
         count: u32,
     ) -> Result<u32, SyncIoError> {
+        info!("SyncFileEngine: write {} bytes at offset {}", count, offset);
         self.file
             .seek(SeekFrom::Start(offset))
             .map_err(SyncIoError::Seek)?;
@@ -76,6 +80,7 @@ impl SyncFileEngine {
     }
 
     pub fn flush(&mut self) -> Result<(), SyncIoError> {
+        info!("SyncFileEngine: flush");
         // flush() first to force any cached data out of rust buffers.
         self.file.flush().map_err(SyncIoError::Flush)?;
         // Sync data out to physical media on host.

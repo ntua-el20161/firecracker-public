@@ -17,7 +17,7 @@ pub use crate::devices::virtio::gen::virtio_blk::{
     VIRTIO_BLK_T_FLUSH, VIRTIO_BLK_T_GET_ID, VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT,
 };
 use crate::devices::virtio::queue::DescriptorChain;
-use crate::logger::{error, IncMetric};
+use crate::logger::{error, IncMetric, info};
 use crate::rate_limiter::{RateLimiter, TokenType};
 use crate::vstate::memory::{ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
 
@@ -288,8 +288,10 @@ impl Request {
                 return Err(VirtioBlockError::UnexpectedReadOnlyDescriptor);
             }
 
-            req.data_addr = data_desc.addr;
+            let data_addr = data_desc.addr;
+            req.data_addr = data_addr;
             req.data_len = data_desc.len;
+            info!("block.request_parse, data addr: {data_addr:?}");
         }
 
         // check request validity
@@ -404,6 +406,7 @@ impl Request {
                 if err.error.is_throttling_err() {
                     ProcessingResult::Throttled
                 } else {
+                    info!("block.process: FileEngineErr Type {:?} error {:?}", self.r#type, err.error);
                     ProcessingResult::Executed(err.user_data.finish(
                         mem,
                         Err(IoErr::FileEngine(err.error)),

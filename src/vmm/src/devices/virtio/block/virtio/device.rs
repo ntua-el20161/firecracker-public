@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use block_io::FileEngine;
+use log::info;
 use serde::{Deserialize, Serialize};
 use utils::eventfd::EventFd;
 use utils::u64_to_usize;
@@ -61,6 +62,7 @@ pub struct DiskProperties {
 impl DiskProperties {
     // Helper function that opens the file with the proper access permissions
     fn open_file(disk_image_path: &str, is_disk_read_only: bool) -> Result<File, VirtioBlockError> {
+        info!("block.open_file: {}", disk_image_path);
         OpenOptions::new()
             .read(true)
             .write(!is_disk_read_only)
@@ -93,6 +95,7 @@ impl DiskProperties {
         is_disk_read_only: bool,
         file_engine_type: FileEngineType,
     ) -> Result<Self, VirtioBlockError> {
+        info!("block.new file: {}", disk_image_path);
         let mut disk_image = Self::open_file(&disk_image_path, is_disk_read_only)?;
         let disk_size = Self::file_size(&disk_image_path, &mut disk_image)?;
         let image_id = Self::build_disk_image_id(&disk_image);
@@ -112,6 +115,7 @@ impl DiskProperties {
         disk_image_path: String,
         is_disk_read_only: bool,
     ) -> Result<(), VirtioBlockError> {
+        info!("block.update file path: {}", disk_image_path);
         let mut disk_image = Self::open_file(&disk_image_path, is_disk_read_only)?;
         let disk_size = Self::file_size(&disk_image_path, &mut disk_image)?;
 
@@ -160,6 +164,7 @@ impl DiskProperties {
     /// buffer. The config space is populated with the disk size based
     /// on the backing file size.
     pub fn virtio_block_config_space(&self) -> Vec<u8> {
+        info!("block.virtio_block_config_space");
         // The config space is little endian.
         let mut config = Vec::with_capacity(BLOCK_CONFIG_SPACE_SIZE);
         for i in 0..BLOCK_CONFIG_SPACE_SIZE {
@@ -357,6 +362,7 @@ impl VirtioBlock {
     /// This function is called by the event manager when the guest notifies us
     /// about new buffers in the queue.
     pub(crate) fn process_queue_event(&mut self) {
+        info!("block.process_queue_event");
         self.metrics.queue_event_count.inc();
         if let Err(err) = self.queue_evts[0].read() {
             error!("Failed to get queue event: {:?}", err);
@@ -407,7 +413,7 @@ impl VirtioBlock {
     pub fn process_queue(&mut self, queue_index: usize) {
         // This is safe since we checked in the event handler that the device is activated.
         let mem = self.device_state.mem().unwrap();
-
+        
         let queue = &mut self.queues[queue_index];
         let mut used_any = false;
 
@@ -468,6 +474,7 @@ impl VirtioBlock {
     }
 
     fn process_async_completion_queue(&mut self) {
+        info!("Processing async completion queue");
         let engine = unwrap_async_file_engine_or_return!(&mut self.disk.file_engine);
 
         // This is safe since we checked in the event handler that the device is activated.
@@ -526,6 +533,7 @@ impl VirtioBlock {
 
     /// Update the backing file and the config space of the block device.
     pub fn update_disk_image(&mut self, disk_image_path: String) -> Result<(), VirtioBlockError> {
+        info!("block.update_disk_image: {}", disk_image_path);
         self.disk.update(disk_image_path, self.read_only)?;
         self.config_space = self.disk.virtio_block_config_space();
 
@@ -550,6 +558,7 @@ impl VirtioBlock {
     }
 
     fn drain_and_flush(&mut self, discard: bool) {
+        info!("Draining and flushing block");
         if let Err(err) = self.disk.file_engine.drain_and_flush(discard) {
             error!("Failed to drain ops and flush block data: {:?}", err);
         }

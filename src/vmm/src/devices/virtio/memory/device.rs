@@ -46,7 +46,6 @@ pub(crate) struct ConfigSpace {
     _padding: [u8; 6],
 
     // guest physical addres from where the memory region starts
-    // maybe init this to 32 * Gib (?)
     pub addr: u64, 
     pub region_size: u64,
     pub usable_region_size: u64,
@@ -328,7 +327,7 @@ impl Memory {
         let res = unsafe {
             libc::madvise(
                 (self.host_addr) as *mut libc::c_void,
-                region_size as libc::size_t,
+                region_size as libc::size_t,    
                 libc::MADV_DONTNEED
             )
         };
@@ -343,7 +342,7 @@ impl Memory {
         self.config_space.plugged_size = 0;
 
         info!("Successful unplug of all blocks");
-        VirtioMemResp::new(VIRTIO_MEM_RESP_NACK, 0)
+        VirtioMemResp::new(VIRTIO_MEM_RESP_ACK, 0)
     }
     pub(crate) fn process_state(&mut self, addr: u64, nb_blocks: u16) -> VirtioMemResp {
         info!("Memory.process_state");
@@ -581,8 +580,10 @@ impl VirtioDevice for Memory {
             self.device_state = DeviceState::Inactive;
             return Err(ActivateError::EventFd);
         }
-        self.device_state = DeviceState::Activated(mem);
 
+
+
+        self.device_state = DeviceState::Activated(mem);
         info!("Memory device [{}] got activated!", self.id());
         Ok(())
     }

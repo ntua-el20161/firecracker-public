@@ -151,6 +151,109 @@ impl std::convert::From<linux_loader::cmdline::Error> for StartMicrovmError {
     }
 }
 
+const GUARD_PAGE_COUNT: usize = 1;
+
+fn build_guarded_region(
+    maybe_file_offset: Option<FileOffset>,
+    size: usize,
+    prot: i32,
+    flags: i32,
+    track_dirty_pages: bool,
+) -> Result<GuestMmapRegion, MmapRegionError> {
+    let page_size = utils::get_page_size().expect("Cannot retrieve page size.");
+    // Create the guarded range size (received size + X pages),
+    // where X is defined as a constant GUARD_PAGE_COUNT.
+    let guarded_size = size + GUARD_PAGE_COUNT * 2 * page_size;
+
+    // Map the guarded range to PROT_NONE
+    let guard_addr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            guarded_size,
+            libc::PROT_NONE,
+            libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
+            -1,
+            0,
+        )
+    };
+
+    if guard_addr == libc::MAP_FAILED {
+        return Err(MmapRegionError::Mmap(Error::last_os_error()));
+    }
+
+    let (fd, offset) = match maybe_file_offset {
+        Some(ref file_offset) => {
+            check_file_offset(file_offset, size)?;
+            (file_offset.file().as_raw_fd(), file_offset.start())
+        }
+        None => (-1, 0),
+    };
+
+    let region_start_addr = guard_addr as usize + page_size * GUARD_PAGE_COUNT;
+
+    // Inside the protected range, starting with guard_addr + PAGE_SIZE,
+    // map the requested range with received protection and flags
+    let region_addr = unsafe {
+        libc::mmap(
+            region_start_addr as *mut libc::c_void,
+            size,
+            prot,
+            flags | libc::MAP_FIXED,
+            fd,
+            offset as libc::off_t,
+        )
+    };
+
+    if region_addr == libc::MAP_FAILED {
+        return Err(MmapRegionError::Mmap(Error::last_os_error()));
+    }
+
+    let bitmap = match track_dirty_pages {  
+        true => {
+            info!("with bitmap");
+            Some(AtomicBitmap::with_len(size))
+        }
+        false => None,
+    };
+
+    unsafe {
+        MmapRegionBuilder::new_with_bitmap(size, bitmap)
+            .with_raw_mmap_pointer(region_addr as *mut u8)
+            .with_mmap_prot(prot)
+            .with_mmap_flags(flags)
+            .build()
+    }
+}
+
+/// Helper for creating the guest memory.
+pub fn create_guest_memory(
+    regions: &[(Option<FileOffset>, GuestAddress, usize)],
+    track_dirty_pages: bool,
+) -> Result<Vec<GuestRegionMmap<Option<AtomicBitmap>>>, MemoryError> {
+    let prot = libc::PROT_READ | libc::PROT_WRITE;
+    let mut mmap_regions = Vec::with_capacity(regions.len());
+
+    for region in regions {
+        let flags = match region.0 {
+            None => libc::MAP_NORESERVE | libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            Some(_) => libc::MAP_NORESERVE | libc::MAP_PRIVATE,
+        };
+
+        let mmap_region =
+            build_guarded_region(region.0.clone(), region.2, prot, flags, track_dirty_pages)
+                .map_err(MemoryError::MmapRegionError)?;
+        
+        let guest_region = GuestRegionMmap::new(mmap_region, region.1)
+            .map_err(MemoryError::VmMemoryError)?;
+        mmap_regions.push(guest_region);
+    }
+
+    //GuestMemoryMmap::from_regions(mmap_regions)
+    //    .map_err(MemoryError::VmMemoryError)
+
+    Ok(mmap_regions)
+}
+
 #[cfg_attr(target_arch = "aarch64", allow(unused))]
 fn create_vmm_and_vcpus(
     instance_info: &InstanceInfo,
@@ -284,7 +387,7 @@ pub fn build_microvm_for_boot(
     // because that would require running a backend process. If in the future we converge to
     // a single way of backing guest memory for vhost-user and non-vhost-user cases,
     // that would not be worth the effort.
-    let guest_memory = if vhost_user_device_used {
+    /*let guest_memory = if vhost_user_device_used {
         GuestMemoryMmap::memfd_backed(
             vm_resources.vm_config.mem_size_mib,
             track_dirty_pages,
@@ -299,7 +402,40 @@ pub fn build_microvm_for_boot(
             vm_resources.vm_config.huge_pages,
         )
         .map_err(StartMicrovmError::GuestMemory)?
-    };
+    };*/
+
+    let base_regions: Vec<_> = crate::arch::arch_memory_regions(vm_resources.vm_config.mem_size_mib << 20).into_iter().map(|(addr, sz)| (None, addr, sz)).collect();
+    let memory_device = vm_resources.memory.iter().next().expect("No memory device.");
+        
+    let base_end = base_regions.last().unwrap();
+    let hp_region_start_address = base_end.1.unchecked_add(base_end.2 as u64);
+    let hp_size: usize = memory_device.lock().expect("Poisoned lock").region_size() as usize;
+    
+    let guest_regions = create_guest_memory(&base_regions, track_dirty_pages)?;
+    // Creating the actual memory backend for this memory device.
+    let hp_regions = create_guest_memory(
+        &[(None, hp_region_start_address, hp_size)],
+        false,
+    )
+    .map_err(StartMicrovmError::GuestMemory)?;
+
+    let all_regions = guest_regions.into_iter().chain(hp_regions.into_iter()).collect();
+    
+    let guest_memory = GuestMemoryMmap::from_regions(all_regions).expect("failed to build guest memory");
+
+    let hp_region = guest_memory.find_region(hp_region_start_address)
+        .ok_or(StartMicrovmError::GuestMemory(MemoryError::RegionNotFound))?;
+    memory_device.lock()
+        .expect("Poisoned lock")
+        .set_host_addr(hp_region.as_ptr() as u64)
+        .map_err(StartMicrovmError::MemoryDevice)?;
+    
+    memory_device
+        .lock()
+        .expect("Poisoned lock")
+        .set_addr(hp_region_start_address.raw_value())
+        .map_err(StartMicrovmError::MemoryDevice)?;
+    
 
     let entry_addr = load_kernel(boot_config, &guest_memory)?;
     let initrd = load_initrd_from_config(boot_config, &guest_memory)?;
@@ -363,6 +499,12 @@ pub fn build_microvm_for_boot(
 
     attach_vmgenid_device(&mut vmm)?;
 
+    let boot_last_addr = base_regions
+        .iter()
+        .map(|(_, a, sz)| a.unchecked_add(*sz as u64 - 1))
+        .max()
+        .expect("no base regions");
+
     configure_system_for_boot(
         &mut vmm,
         vcpus.as_mut(),
@@ -371,6 +513,7 @@ pub fn build_microvm_for_boot(
         entry_addr,
         &initrd,
         boot_cmdline,
+        boot_last_addr
     )?;
 
     // Move vcpus to their own threads and start their state machine in the 'Paused' state.
@@ -772,6 +915,7 @@ pub fn configure_system_for_boot(
     entry_addr: GuestAddress,
     initrd: &Option<InitrdConfig>,
     boot_cmdline: LoaderKernelCmdline,
+    boot_last_addr: GuestAddress
 ) -> Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -844,6 +988,7 @@ pub fn configure_system_for_boot(
             cmdline_size,
             initrd,
             vcpu_config.vcpu_count,
+            boot_last_addr
         )
         .map_err(ConfigureSystem)?;
 
@@ -891,8 +1036,8 @@ fn attach_virtio_device<T: 'static + VirtioDevice + MutEventSubscriber + Debug>(
     info!("attach_virtio_device: device_id: {}", id);
     event_manager.add_subscriber(device.clone());
 
-    // The device mutex mustn't be locked here otherwise it will deadlock.
     let device = MmioTransport::new(vmm.guest_memory().clone(), device, is_vhost_user);
+
     vmm.mmio_device_manager
         .register_mmio_virtio_for_boot(
             vmm.vm.fd(),
@@ -1025,107 +1170,6 @@ fn attach_balloon_device(
     attach_virtio_device(event_manager, vmm, id, balloon.clone(), cmdline, false)
 }
 
-const GUARD_PAGE_COUNT: usize = 1;
-
-fn build_guarded_region(
-    maybe_file_offset: Option<FileOffset>,
-    size: usize,
-    prot: i32,
-    flags: i32,
-    track_dirty_pages: bool,
-) -> Result<GuestMmapRegion, MmapRegionError> {
-    let page_size = utils::get_page_size().expect("Cannot retrieve page size.");
-    // Create the guarded range size (received size + X pages),
-    // where X is defined as a constant GUARD_PAGE_COUNT.
-    let guarded_size = size + GUARD_PAGE_COUNT * 2 * page_size;
-
-    // Map the guarded range to PROT_NONE
-    let guard_addr = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
-            guarded_size,
-            libc::PROT_NONE,
-            libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
-            -1,
-            0,
-        )
-    };
-
-    if guard_addr == libc::MAP_FAILED {
-        return Err(MmapRegionError::Mmap(Error::last_os_error()));
-    }
-
-    let (fd, offset) = match maybe_file_offset {
-        Some(ref file_offset) => {
-            check_file_offset(file_offset, size)?;
-            (file_offset.file().as_raw_fd(), file_offset.start())
-        }
-        None => (-1, 0),
-    };
-
-    let region_start_addr = guard_addr as usize + page_size * GUARD_PAGE_COUNT;
-
-    // Inside the protected range, starting with guard_addr + PAGE_SIZE,
-    // map the requested range with received protection and flags
-    let region_addr = unsafe {
-        libc::mmap(
-            region_start_addr as *mut libc::c_void,
-            size,
-            prot,
-            flags | libc::MAP_FIXED,
-            fd,
-            offset as libc::off_t,
-        )
-    };
-
-    if region_addr == libc::MAP_FAILED {
-        return Err(MmapRegionError::Mmap(Error::last_os_error()));
-    }
-
-    let bitmap = match track_dirty_pages {  
-        true => {
-            info!("with bitmap");
-            Some(AtomicBitmap::with_len(size))
-        }
-        false => None,
-    };
-
-    unsafe {
-        MmapRegionBuilder::new_with_bitmap(size, bitmap)
-            .with_raw_mmap_pointer(region_addr as *mut u8)
-            .with_mmap_prot(prot)
-            .with_mmap_flags(flags)
-            .build()
-    }
-}
-
-/// Helper for creating the guest memory.
-pub fn create_guest_memory(
-    regions: &[(Option<FileOffset>, GuestAddress, usize)],
-    track_dirty_pages: bool,
-) -> std::result::Result<GuestMemoryMmap, MemoryError> {
-    let prot = libc::PROT_READ | libc::PROT_WRITE;
-    let mut mmap_regions = Vec::with_capacity(regions.len());
-
-    for region in regions {
-        let flags = match region.0 {
-            None => libc::MAP_NORESERVE | libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-            Some(_) => libc::MAP_NORESERVE | libc::MAP_PRIVATE,
-        };
-
-        let mmap_region =
-            build_guarded_region(region.0.clone(), region.2, prot, flags, track_dirty_pages)
-                .map_err(MemoryError::MmapRegionError)?;
-        
-        let guest_region = GuestRegionMmap::new(mmap_region, region.1)
-            .map_err(MemoryError::VmMemoryError)?;
-        mmap_regions.push(guest_region);
-    }
-
-    GuestMemoryMmap::from_regions(mmap_regions)
-        .map_err(MemoryError::VmMemoryError)
-}
-
 fn attach_memory_devices<'a>(
     vmm: &mut Vmm,
     cmdline: &mut LoaderKernelCmdline,
@@ -1137,36 +1181,11 @@ fn attach_memory_devices<'a>(
         if index > 0 {
             panic!("too many memory devices. please only use one for now!! Thx >.< !!")
         }
-        let id = String::from(memory.lock().expect("Poisoned lock").id());
-        let size: usize = memory.lock().expect("Poisoned lock").region_size() as usize;
+
+        let id: String = String::from(memory.lock().expect("Poisoned lock").id());
+
         // The device mutex mustn't be locked here otherwise it will deadlock.
         attach_virtio_device(event_manager, vmm, id, memory.clone(), cmdline, false)?;
-        
-        let region_start_address = vmm.guest_memory.last_addr().unchecked_add(1).0;
-        
-        // Creating the actual memory backend for this memory device.
-        let this_device_memory: vm_memory::GuestMemoryMmap<Option<AtomicBitmap>> = create_guest_memory(
-            &[(None, GuestAddress(region_start_address), size)],
-            false,
-        )
-        .map_err(StartMicrovmError::GuestMemory)?;
-
-        let region = this_device_memory.find_region(GuestAddress(region_start_address))
-            .ok_or(StartMicrovmError::GuestMemory(MemoryError::RegionNotFound))?;
-        memory.lock()
-            .expect("Poisoned lock")
-            .set_host_addr(region.as_ptr() as u64)
-            .map_err(StartMicrovmError::MemoryDevice)?;
-        // Adding the memory to the VM.
-        vmm.vm
-            .add_memory(&this_device_memory)
-            .map_err(StartMicrovmError::AddMemoryDeviceRegion)?;
-        vmm.memory_device_guest_memory = vec![this_device_memory];
-        memory
-            .lock()
-            .expect("Poisoned lock")
-            .set_addr(region_start_address)
-            .map_err(StartMicrovmError::MemoryDevice)?;
     }
     Ok(())
 }
