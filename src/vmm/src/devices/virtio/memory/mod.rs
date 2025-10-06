@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 pub mod device;
 pub mod event_handler;
+pub mod persist;
+
 pub use self::device::{ Memory, MemoryConfig };
 use super::queue::QueueError;
 pub const QUEUE_SIZE: u16 = 256;
@@ -68,6 +70,8 @@ pub enum MemoryDeviceError {
     SizeNotMultipleOfBlockSize,
     /// Request type is none of the supported types.
     UnknownRequestType(u16),
+    /// Error restoring the virtio mem queue.
+    QueueRestoreError,
 } 
 
 pub type MemoryResult<T> = std::result::Result<T, MemoryDeviceError>;

@@ -241,6 +241,10 @@ impl VmResources {
             SharedDeviceType::Entropy(entropy) => {
                 self.entropy.set_device(entropy);
             }
+
+            SharedDeviceType::VirtioMem(memory) => {
+                let _ = self.memory.add_device(memory);
+            }
         }
 
         Ok(())

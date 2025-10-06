@@ -19,6 +19,9 @@ int main() {
 
     printf("Done. Press Enter to free memory...\n");
     getchar();
+    
+    system("free -h");   
+
     free(mem);
     return 0;
 }

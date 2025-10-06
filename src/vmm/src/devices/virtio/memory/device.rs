@@ -11,7 +11,7 @@ use utils::eventfd::EventFd;
 use utils::get_page_size;
 use vm_memory::{Bytes };
 use crate::devices::virtio::gen::virtio_blk::VIRTIO_F_VERSION_1;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
 //use vm_memory::{ByteValued, GuestMemoryMmap};
 use crate::vstate::memory::{ByteValued, GuestMemoryMmap};
@@ -83,16 +83,16 @@ pub struct Memory {
     pub(crate) config_space: ConfigSpace,
     pub(crate) activate_evt: EventFd,
     // Transport related fields.
-    pub(crate) queues: [Queue; 1],  // virtq
+    pub(crate) queues: Vec<Queue>,  // virtq
     pub(crate) queue_evts: [EventFd; 1], // used for notification
     pub(crate) device_state: DeviceState, // Device state : Activated/Inactive
     pub(crate) irq_trigger: IrqTrigger, 
     // Implementation specific fields.
     pub(crate) id: String,
-    addr_is_set: bool,
-    memory_bitmap: MemBitmap,
-    host_addr: u64,
-    host_addr_is_set: bool,
+    pub(crate) addr_is_set: bool,
+    pub(crate) memory_bitmap: MemBitmap,
+    pub(crate) host_addr: u64,
+    pub(crate) host_addr_is_set: bool,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -122,7 +122,7 @@ pub struct VirtioMemResp {
 
 unsafe impl ByteValued for VirtioMemResp {}
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MemBitmap {
     bitmap: Vec<bool>,
 }
@@ -198,9 +198,9 @@ impl Memory {
         if requested_size % block_size != 0 {
             return Err(MemoryError::SizeNotMultipleOfBlockSize);
         }
-        if let Some(node_id) = node_id {
+        /*if let Some(node_id) = node_id {
             todo!("Node id feature unimplemented [{}]", node_id);
-        }
+        }*/
         let avail_features = 1u64 << VIRTIO_F_VERSION_1;
         let queue_evts = [EventFd::new(libc::EFD_NONBLOCK).map_err(MemoryError::EventFd)?];
         info!(
@@ -227,7 +227,7 @@ impl Memory {
             irq_trigger: IrqTrigger::new().map_err(MemoryError::EventFd)?,
             device_state: DeviceState::Inactive,
             activate_evt: EventFd::new(libc::EFD_NONBLOCK).map_err(MemoryError::EventFd)?,
-            queues: [Queue::new(QUEUE_SIZE)],
+            queues: vec![Queue::new(QUEUE_SIZE)],
             queue_evts,
             host_addr: 0u64, // host_addr and addr are set after the creation of the memory region
             host_addr_is_set: false,
@@ -236,10 +236,10 @@ impl Memory {
  
     /// Process device virtio queue.
     pub(crate) fn process_guest_request_queue(&mut self) {
-        // TODO
         // called in src>vmm>src>device_manager>mmio.rs>kick_devices
         // called in case the device has memory to plug on init (?) virtio spec-1.2 5.15.
-        debug!("Memory.process_guest_requests_queue");
+        info!("Memory.process_guest_requests_queue");
+        let _ = self.process_request_queue_event();
     }
 
     fn is_request_range_valid(&self, addr: u64, size: u64) -> bool {

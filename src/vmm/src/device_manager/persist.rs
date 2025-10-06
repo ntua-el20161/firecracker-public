@@ -18,6 +18,8 @@ use super::resources::ResourceAllocator;
 #[cfg(target_arch = "aarch64")]
 use crate::arch::DeviceType;
 use crate::devices::acpi::vmgenid::{VMGenIDState, VMGenIdConstructorArgs, VmGenId, VmGenIdError};
+use crate::devices::virtio::memory::{Memory, MemoryDeviceError};
+use crate::devices::virtio::memory::persist::{VirtioMemConstructorArgs, VirtioMemState};
 use crate::devices::virtio::balloon::persist::{BalloonConstructorArgs, BalloonState};
 use crate::devices::virtio::balloon::{Balloon, BalloonError};
 use crate::devices::virtio::block::device::Block;
@@ -40,7 +42,7 @@ use crate::devices::virtio::vsock::persist::{
 use crate::devices::virtio::vsock::{
     Vsock, VsockError, VsockUnixBackend, VsockUnixBackendError, TYPE_VSOCK,
 };
-use crate::devices::virtio::{TYPE_BALLOON, TYPE_BLOCK, TYPE_NET, TYPE_RNG};
+use crate::devices::virtio::{TYPE_BALLOON, TYPE_BLOCK, TYPE_NET, TYPE_RNG, TYPE_MEMORY};
 use crate::mmds::data_store::MmdsVersion;
 use crate::resources::{ResourcesError, VmResources};
 use crate::snapshot::Persist;
@@ -51,6 +53,8 @@ use crate::EventManager;
 /// Errors for (de)serialization of the MMIO device manager.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
 pub enum DevicePersistError {
+    /// Virtio-Mem: {0}
+    VirtioMem(#[from] MemoryDeviceError),
     /// Balloon: {0}
     Balloon(#[from] BalloonError),
     /// Block: {0}
@@ -74,6 +78,19 @@ pub enum DevicePersistError {
     Entropy(#[from] EntropyError),
     /// Resource misconfiguration: {0}. Is the snapshot file corrupted?
     ResourcesError(#[from] ResourcesError),
+}
+
+/// Holds the state of a virtio-mem device connected to the MMIO space.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectedVirtioMemState {
+    /// Device identifier.
+    pub device_id: String,
+    /// Device_state.
+    pub device_state: VirtioMemState,
+    /// Mmio transport state.
+    pub transport_state: MmioTransportState,
+    /// VmmResources
+    pub device_info: MMIODeviceInfo,
 }
 
 /// Holds the state of a balloon device connected to the MMIO space.
@@ -190,6 +207,8 @@ pub struct DeviceStates {
     pub vsock_device: Option<ConnectedVsockState>,
     /// Balloon device state.
     pub balloon_device: Option<ConnectedBalloonState>,
+    /// Memory device state.
+    pub virtio_mem_device: Option<ConnectedVirtioMemState>,
     /// Mmds version.
     pub mmds_version: Option<MmdsVersionState>,
     /// Entropy device state.
@@ -205,6 +224,7 @@ pub enum SharedDeviceType {
     Balloon(Arc<Mutex<Balloon>>),
     Vsock(Arc<Mutex<Vsock<VsockUnixBackend>>>),
     Entropy(Arc<Mutex<Entropy>>),
+    VirtioMem(Arc<Mutex<Memory>>)
 }
 
 pub struct MMIODevManagerConstructorArgs<'a> {
@@ -311,6 +331,19 @@ impl<'a> Persist<'a> for MMIODeviceManager {
 
             let mut locked_device = mmio_transport.locked_device();
             match locked_device.device_type() {
+                TYPE_MEMORY => {
+                    let virtio_mem_state = locked_device
+                        .as_any()
+                        .downcast_ref::<Memory>()
+                        .unwrap()
+                        .save();
+                    states.virtio_mem_device = Some(ConnectedVirtioMemState {
+                        device_id: devid.clone(),
+                        device_state: virtio_mem_state,
+                        transport_state,
+                        device_info: device_info.clone(),
+                    })
+                }
                 TYPE_BALLOON => {
                     let balloon_state = locked_device
                         .as_any()
@@ -509,6 +542,27 @@ impl<'a> Persist<'a> for MMIODeviceManager {
             event_manager.add_subscriber(as_subscriber);
             Ok(())
         };
+
+        if let Some(virtio_mem_state) = &state.virtio_mem_device {
+            let device = Arc::new(Mutex::new(Memory::restore(
+                VirtioMemConstructorArgs { mem: mem.clone() }, 
+                &virtio_mem_state.device_state,
+            )?));
+
+            constructor_args
+                .vm_resources
+                .update_from_restored_device(SharedDeviceType::VirtioMem(device.clone()))?;
+
+            restore_helper(
+                device.clone(),
+                false,
+                device,
+                &virtio_mem_state.device_id,
+                &virtio_mem_state.transport_state,
+                &virtio_mem_state.device_info,
+                constructor_args.event_manager,
+            )?;
+        }
 
         if let Some(balloon_state) = &state.balloon_device {
             let device = Arc::new(Mutex::new(Balloon::restore(
