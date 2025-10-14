@@ -48,7 +48,7 @@ impl Block {
     }
 
     pub fn update_disk_image(&mut self, disk_image_path: String) -> Result<(), BlockError> {
-        info!("block.update_disk_image");
+        //info!("block.update_disk_image");
         match self {
             Self::Virtio(b) => b
                 .update_disk_image(disk_image_path)
@@ -72,7 +72,7 @@ impl Block {
     }
 
     pub fn update_config(&mut self) -> Result<(), BlockError> {
-        info!("block.update_config");
+        //info!("block.update_config");
         match self {
             Self::Virtio(_) => Err(BlockError::InvalidBlockBackend),
             Self::VhostUser(b) => b.config_update().map_err(BlockError::VhostUserBackend),
@@ -80,7 +80,7 @@ impl Block {
     }
 
     pub fn prepare_save(&mut self) {
-        info!("block.prepare_save");
+        //info!("block.prepare_save");
         match self {
             Self::Virtio(b) => b.prepare_save(),
             Self::VhostUser(b) => b.prepare_save(),
@@ -110,7 +110,7 @@ impl Block {
     }
 
     pub fn read_only(&self) -> bool {
-        info!("block.read_only");
+        //info!("block.read_only");
         match self {
             Self::Virtio(b) => b.read_only,
             Self::VhostUser(b) => b.read_only,

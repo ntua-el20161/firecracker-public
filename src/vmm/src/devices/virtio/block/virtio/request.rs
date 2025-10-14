@@ -291,7 +291,7 @@ impl Request {
             let data_addr = data_desc.addr;
             req.data_addr = data_addr;
             req.data_len = data_desc.len;
-            info!("block.request_parse, data addr: {data_addr:?}");
+            //info!("block.request_parse, data addr: {data_addr:?}");
         }
 
         // check request validity
@@ -406,7 +406,7 @@ impl Request {
                 if err.error.is_throttling_err() {
                     ProcessingResult::Throttled
                 } else {
-                    info!("block.process: FileEngineErr Type {:?} error {:?}", self.r#type, err.error);
+                    //info!("block.process: FileEngineErr Type {:?} error {:?}", self.r#type, err.error);
                     ProcessingResult::Executed(err.user_data.finish(
                         mem,
                         Err(IoErr::FileEngine(err.error)),
