@@ -28,7 +28,7 @@
 			"id": "memory-dev-1",
 			"region_size_kib": 1048576,
 			"block_size_kib": 512,
-			"requested_size_kib": 0
+			"requested_size_kib": 1048576
 		}
 	],
 	"network-interfaces": [

@@ -1,7 +1,4 @@
 virtio-mem:
-root@ubuntu-fc-uvm:~# [ 2333.613782] unplug done, total took 372773197 ns for 327680 pages, zeroing took 0 ns for 0 pages, migrate took 5407812 ns for 1885 pages, fake took 22154928 ns for 327680 pages, offline took 50383613 ns for 262144 pages, comm took 300148565 ns for 260096 pages
-[ 2333.618859] unplug done, total took 7423 ns for 2048 pages, zeroing took 0 ns for 0 pages, migrate took 0 ns for 0 pages, fake took 3487 ns for 2048 pages, offline took 223 ns for 65536 pages, comm took 0 ns for 0 pages
-
-virtio-balloon:
+Mean duration: 271064788.500ns for 1048576 kib unplug
 
 
