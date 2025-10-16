@@ -23,6 +23,7 @@ done
 if [ $count -gt 0 ]; then
     mean=$(echo "scale=3; $total / $count" | bc)
     echo "Mean duration: ${mean}ns"
+    echo "Mean duration virtio-mem: ${mean}" | cat >> /home/bill/perf.txt 
 else
     echo "No valid measurements found."
 fi

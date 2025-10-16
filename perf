@@ -1,4 +1,7 @@
 virtio-mem:
 Mean duration: 271064788.500ns for 1048576 kib unplug
 
+balloon:
+Mean duration: 990319488.800ns for 1048576 kib unplug
+
 
