@@ -1,7 +1,7 @@
 {
 	"boot-source": {
 		"kernel_image_path": "/home/bill/linux-elastic-mem/linux-6.6.30/vmlinux",
-		"boot_args": "console=ttyS0 reboot=k panic=1 pci=off",
+		"boot_args": "console=ttyS0 reboot=k panic=1 squeezy=128 pci=off memhp_default_state=online_movable init_on_free=0 init_on_alloc=1",
 		"initrd_path": null
 	},
 	"drives": [
@@ -18,17 +18,17 @@
 	],
 	"machine-config": {
 		"vcpu_count": 2,
-		"mem_size_mib": 512,
-		"smt": false,
+		"mem_size_mib": 1024,
+		"smt": true,
 		"track_dirty_pages": false
 	},
 	"balloon": null,
 	"memory-devices": [
 		{
 			"id": "memory-dev-1",
-			"region_size_kib": 1048576,
-			"block_size_kib": 512,
-			"requested_size_kib": 1048576
+			"region_size_kib": 262144,
+			"block_size_kib": 2048,
+			"requested_size_kib": 262144
 		}
 	],
 	"network-interfaces": [

@@ -8,6 +8,8 @@ use utils::epoll::EventSet;
 use crate::devices::virtio::memory::device::Memory;
 use crate::devices::virtio::memory::GUEST_REQUESTS_INDEX;
 use crate::devices::virtio::device::VirtioDevice;
+use crate::devices::virtio::memory::MemoryDeviceError as MemoryError;
+use crate::devices::virtio::device::{ IrqTrigger, IrqType };
 
 impl Memory {
     fn register_activate_event(&self, ops: &mut EventOps) {
@@ -50,8 +52,9 @@ impl MutEventSubscriber for Memory {
             let activate_fd = self.activate_evt.as_raw_fd();
             match source {
                 _ if source == virtq_quest_requests_ev_fd => {
+                    
                     self.process_request_queue_event()
-                    .unwrap_or_else(|e| {
+                        .unwrap_or_else(|e| {
                         error!(
                             "Memory [{}]: Failed to process request queue event: {}",
                             self.id(),

@@ -1,0 +1,5 @@
+unplugging 1GB out of 2GB vm 
+Mean duration virtio-mem: 450852020.200ns
+Mean duration for ch: 438809192.400ns
+Mean duraton for balloon: 1124524726.600ns
+

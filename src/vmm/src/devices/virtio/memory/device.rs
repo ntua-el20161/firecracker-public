@@ -7,6 +7,7 @@ use std::result::Result;
 use std::mem::size_of;
 use crate::devices::virtio::memory::GUEST_REQUESTS_INDEX;
 use crate::logger::{error, info, debug};
+use micro_http::Response;
 use utils::eventfd::EventFd;
 use utils::get_page_size;
 use vm_memory::{Bytes };
@@ -117,7 +118,7 @@ unsafe impl ByteValued for VirtioMemReq {}
 pub struct VirtioMemResp {
     pub resp_type: u16,
     pub padding: [u16; 3],
-    pub state: u16,
+    pub resp_state: u16,
 }
 
 unsafe impl ByteValued for VirtioMemResp {}
@@ -160,11 +161,11 @@ impl MemBitmap {
 }
 
 impl VirtioMemResp {
-    pub fn new(resp_type: u16, state: u16) -> Self {
+    pub fn new(resp_type: u16, resp_state: u16) -> Self {
         Self {
             resp_type,
             padding: Default::default(),
-            state,
+            resp_state,
         }
     }
 }
@@ -254,46 +255,49 @@ impl Memory {
         true
     }
 
-    pub(crate) fn process_plug(&mut self, addr: u64, nb_blocks: u16) -> VirtioMemResp {
+    pub(crate) fn process_plug(&mut self, addr: u64, nb_blocks: u16) -> (u16, u16) {
         info!("Memory.process_plug");
         let plug_size = nb_blocks as u64 * self.block_size();
         
         if !self.is_request_range_valid(addr, plug_size) {
             info!("Plug request invalid: addr {}, nb_blocks {}", addr, nb_blocks);
-            return VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0);
+            return (VIRTIO_MEM_RESP_ERROR, 0)
         }
         
         let offset = addr - self.config_space.addr;
         let first_block_index = (offset / self.block_size()) as usize;
 
         // check if any of the request blocks is in plugged state in the bitmap
-        let bitmap = &mut self.memory_bitmap;
-        if !bitmap.is_range_state(first_block_index, nb_blocks, false) {
+        if self.memory_bitmap.is_range_state(first_block_index, nb_blocks, false) {
             info!("Plug request overlaps with already plugged blocks: addr {}, nb_blocks {}", addr, nb_blocks);
-            return VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0);
+            return (VIRTIO_MEM_RESP_ERROR, 0);
         }
 
-        bitmap.set_range_state(first_block_index, nb_blocks, true);
+        self.memory_bitmap.set_range_state(first_block_index, nb_blocks, true);
 
         self.config_space.plugged_size += plug_size;
 
         info!("succesful plug of {} blocks at addr {}", nb_blocks, addr);
-        VirtioMemResp::new(VIRTIO_MEM_RESP_ACK, 0)
+        (VIRTIO_MEM_RESP_ACK, 0)
     }
 
-    pub(crate) fn process_unplug(&mut self, addr: u64, nb_blocks: u16) -> VirtioMemResp {
-        info!("Memory.process_unplug");
+    pub(crate) fn process_unplug(&mut self, addr: u64, nb_blocks: u16) -> (u16, u16) {
+        //info!("Memory.process_unplug");
         
         let unplug_size = nb_blocks as u64 * self.block_size();
         if !self.is_request_range_valid(addr, unplug_size) {
             info!("Unplug request invalid: addr {}, nb_blocks {}", addr, nb_blocks);
-            return VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0);
+            return (VIRTIO_MEM_RESP_ERROR, 0);
         }
         
         let offset = addr - self.config_space.addr;
         let first_block_index = (offset / self.block_size()) as usize;
 
-        // for now the memory region is not backed by a file
+        if self.memory_bitmap.is_range_state(first_block_index, nb_blocks, true) {
+            info!("Unplug request overlaps with already unplugged blocks: addr {}, nb_blocks {}", addr, nb_blocks);
+            return (VIRTIO_MEM_RESP_ERROR, 0);
+        }
+
         let res = unsafe {
             libc::madvise(
                 (self.host_addr + offset) as *mut libc::c_void,
@@ -301,26 +305,20 @@ impl Memory {
                 libc::MADV_DONTNEED
             )
         };
+
         if res != 0 {
             error!("Failed to madvise memory region: addr {}, size {}", addr, unplug_size);
-            return VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0);
+            return (VIRTIO_MEM_RESP_ERROR, 0);
         }
 
-        // check if any of the request blocks is in plugged state in the bitmap
-        let bitmap = &mut self.memory_bitmap;
-        if !bitmap.is_range_state(first_block_index, nb_blocks, true) {
-            info!("Unplug request overlaps with already unplugged blocks: addr {}, nb_blocks {}", addr, nb_blocks);
-            return VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0);
-        }
-
-        bitmap.set_range_state(first_block_index, nb_blocks, false);
+        self.memory_bitmap.set_range_state(first_block_index, nb_blocks, false);
 
         self.config_space.plugged_size -= unplug_size;
 
-        info!("succesful unplug of {} blocks at addr {}", nb_blocks, addr);
-        VirtioMemResp::new(VIRTIO_MEM_RESP_ACK, 0)
+        //info!("succesful unplug of {} blocks at addr {}", nb_blocks, addr);
+        (VIRTIO_MEM_RESP_ACK, 0)
     }
-    pub(crate) fn process_unplug_all(&mut self) -> VirtioMemResp {
+    pub(crate) fn process_unplug_all(&mut self) -> (u16, u16) {
 
         let region_size = self.region_size();
         let block_size = self.block_size();
@@ -333,7 +331,7 @@ impl Memory {
         };
         if res != 0 {
             error!("Failed to madvise memory region: addr {}, size {}", self.config_space.addr, region_size);
-            return VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0);
+            return (VIRTIO_MEM_RESP_ERROR, 0)
         }
 
         let bitmap = &mut self.memory_bitmap;
@@ -341,17 +339,17 @@ impl Memory {
 
         self.config_space.plugged_size = 0;
 
-        info!("Successful unplug of all blocks");
-        VirtioMemResp::new(VIRTIO_MEM_RESP_ACK, 0)
+        info!("Successful unplug of all blocks");   
+        (VIRTIO_MEM_RESP_ACK, 0)
     }
-    pub(crate) fn process_state(&mut self, addr: u64, nb_blocks: u16) -> VirtioMemResp {
-        info!("Memory.process_state");
+    pub(crate) fn process_state(&mut self, addr: u64, nb_blocks: u16) -> (u16, u16) {
+        //info!("Memory.process_state");
         
         let size = nb_blocks as u64 * self.block_size();
 
         if !self.is_request_range_valid(addr, size) {
-            info!("State request invalid: addr {}, nb_blocks {}", addr, nb_blocks);
-            return VirtioMemResp::new(VIRTIO_MEM_RESP_ERROR, 0);
+            //info!("State request invalid: addr {}, nb_blocks {}", addr, nb_blocks);
+            return (VIRTIO_MEM_RESP_ERROR, 0);
         }
 
         let offset = addr - self.config_space.addr;
@@ -365,10 +363,13 @@ impl Memory {
             VIRTIO_MEM_STATE_MIXED
         };
 
-        VirtioMemResp::new(VIRTIO_MEM_RESP_ACK, range_state)
+        (VIRTIO_MEM_RESP_ACK, range_state)
     }
 
     pub(crate) fn process_request_queue_event(&mut self) -> MemoryResult<()> {
+        self.queue_evts[GUEST_REQUESTS_INDEX]
+            .read()
+            .map_err(MemoryError::EventFd)?;
 
         while let Some(head) = self.queues[GUEST_REQUESTS_INDEX].pop(self.device_state.mem().unwrap()) {
             if head.len as usize >= size_of::<VirtioMemReq>() {
@@ -381,18 +382,14 @@ impl Memory {
 
                 info!("virtio-mem request received: {}", req.req_type);
 
-                self.queue_evts[GUEST_REQUESTS_INDEX]
-                    .read()
-                    .map_err(MemoryError::EventFd)?;
-
-                let resp = match req.req_type {
+                let (resp_type, resp_state) = match req.req_type {
                         VIRTIO_MEM_REQ_PLUG => {
                             info!("VIRTIO_MEM_REQ_PLUG");
                             self.process_plug(req.data.addr, req.data.nb_blocks)
                         }
                         
                         VIRTIO_MEM_REQ_UNPLUG => {
-                            info!("VIRTIO_MEM_REQ_UNPLUG");
+                            //info!("VIRTIO_MEM_REQ_UNPLUG");
                             self.process_unplug(req.data.addr, req.data.nb_blocks)
                         }
                         VIRTIO_MEM_REQ_UNPLUG_ALL => {
@@ -409,21 +406,24 @@ impl Memory {
                         }    
                 };
 
-                info!("Memory sending response: {:?}", resp);
+                let resp = VirtioMemResp::new(resp_type, resp_state);
+
+                //info!("Memory sending response: {:?}", resp);
                 self.device_state.mem().unwrap()
                     .write_obj(resp, head_addr)
                     .map_err(|_| MemoryError::ResponseSendFailure)?;
                 self.queues[GUEST_REQUESTS_INDEX]
                     .add_used(self.device_state.mem().unwrap(), head_index, size_of::<VirtioMemResp>() as u32)
                     .map_err(MemoryError::Queue)?;
-                self.irq_trigger
-                    .trigger_irq(IrqType::Vring)
-                    .map_err(MemoryError::InterruptError)?;
             } else {
                 error!("Invalid request size: expected at least {} bytes", std::mem::size_of::<VirtioMemReq>());
                 return Err(MemoryError::GuestMemory);
             }
         }
+
+        self.irq_trigger
+            .trigger_irq(IrqType::Vring)
+            .map_err(MemoryError::InterruptError)?;
 
         Ok(())
     }   
@@ -580,9 +580,7 @@ impl VirtioDevice for Memory {
             self.device_state = DeviceState::Inactive;
             return Err(ActivateError::EventFd);
         }
-
-
-
+        
         self.device_state = DeviceState::Activated(mem);
         info!("Memory device [{}] got activated!", self.id());
         Ok(())
